@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id);
   if (!$('inline-pdf')) return;
   const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/build/';
-  const supported = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function' && !!window.Worker && !!window.crypto?.subtle;
+  const supported = typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function' && !!window.Worker && !!window.crypto?.subtle;
   let libPromise, current = null, output = null, sourceName = '', selectedFile = null;
   const say = (message, error = false) => { $('sheet-status').textContent = message; $('sheet-status').classList.toggle('error', error); };
   const check = job => { if (job.cancelled || current !== job) throw new Error('Cancelled'); };
@@ -16,6 +16,7 @@
     $('sheet-cancel').hidden = !value;
     $('sheet-progress').hidden = !value;
     $('sheet-retry').hidden = value || !selectedFile || !supported;
+    window.dispatchEvent(new CustomEvent('medici:pdf-busy',{detail:{busy:value}}));
   }
   function clearResult() { output = null; $('sheet-download').hidden = true; $('sheet-warnings').hidden = true; }
   function cancel(message = 'Conversion cancelled. Your current music is unchanged.') {
@@ -45,6 +46,7 @@
         if (data.type === 'error') {finish(new Error(data.msg));return;}
         if (data.type === expected) {finish(null,data);return;}
         if (data.type === 'progress' && data.stage === 'python') say('Preparing the note reader… Your PDF stays on this device.');
+        if (data.type === 'progress' && data.stage === 'models') { $('sheet-progress').removeAttribute('value'); say('Loading recognition models… Keep this tab open.'); }
         if (data.type === 'progress' && data.stage === 'download') {
           job.downloads[data.name] = data.loaded;
           const loaded = Object.values(job.downloads).reduce((a,b) => a+b,0);
@@ -85,7 +87,7 @@
       const count = choice==='auto' ? Math.min(3,doc.numPages-first+1) : requested;
       if (first+count-1>doc.numPages) throw new Error(`The selection goes past page ${doc.numPages}. Reduce the page count.`);
       say('Preparing the note reader… First use downloads about 200–250 MB. Keep this tab open.');
-      job.worker = new Worker('omr-worker.js',{type:'module'});
+      job.worker = new Worker('omr-worker.js?build=async1',{type:'module'});
       await callWorker(job,{type:'init'},'ready'); check(job);
       const pages = [];
       for (let index=0;index<count;index++) {
@@ -137,7 +139,7 @@
   $('sheet-cancel').addEventListener('click',() => cancel());
   window.addEventListener('medici:cancel-pdf',() => {
     if (current) cancel('Conversion cancelled because you chose another score.');
-    else say(supported ? 'Choose a PDF to read its notes.' : 'PDF recognition needs a supported desktop browser.');
+    else say(supported ? 'Choose a PDF to read its notes.' : 'PDF recognition needs WebAssembly, web workers and a secure connection.');
     clearResult();
   });
   window.addEventListener('pagehide',() => cancel());
@@ -153,5 +155,5 @@
     catch {say('Could not clear the recognition cache. Browser settings can clear site data.',true);}
   });
   busy(false);
-  if (!supported) say('PDF recognition is unavailable in this browser. Try current desktop Chrome or Edge. iPhone/iPad needs WebAssembly JSPI (Safari 27+); phone conversion is not yet tested. Your saved music can still play.',true);
+  if (!supported) say('PDF recognition needs WebAssembly, web workers and a secure connection. Open the HTTPS site in an updated browser. Your saved music can still play.',true);
 })();

@@ -17,7 +17,7 @@ There is no YouTube player, built-in song, MIDI upload, account, paid backend, o
 - First use downloads roughly 200–250 MB. The 157 MB model set is cached when browser storage permits. Downloads start only after choosing a PDF. Runtime packages are versioned; model files are pinned and SHA-256 verified.
 - Cancellation terminates recognition and discards partial results. A failed conversion keeps the last playable score. New work cannot be overwritten by a stale conversion or delayed restoration.
 - Recognition is experimental. Notes, accidentals, rhythm, staves, and key/time signatures can be wrong. Repeats and expressive timing/pedal are not fully reproduced. Check the draft against the score; no general accuracy percentage is claimed.
-- Requires WebAssembly JSPI (`Suspending`/`promising`), workers, and Web Crypto. Desktop Chromium 154 has been exercised with the engine. Actual iPhone/iPad conversion and low-memory phones have not been verified. Unsupported browsers receive a disabled upload state and clear guidance; saved-score playback can still work.
+- Requires WebAssembly, web workers, and Web Crypto over HTTPS. The recognition bridge uses ordinary async/await, so WebAssembly JSPI is no longer required. Browsers without JSPI use ONNX’s plain WASM runtime instead of its WebGPU/Asyncify bundle. Actual iPhone/iPad hardware and low-memory phones still need verification; availability of the APIs is not a full compatibility guarantee.
 - Single-threaded WASM is used when cross-origin isolation is absent. No service worker changes site security headers.
 
 ## Instrument player
@@ -43,6 +43,8 @@ npm install
 npm test
 npm run serve
 ```
+
+Rebuild the browser-only homr async archive with `python3 scripts/build_async_homr.py`. Validate it with `python3 -m unittest discover -s tests -p 'test_*.py'`. The builder verifies the pinned upstream archive and each changed call site, preserves source comments, and produces `vendor/homr-async.zip`; the original `vendor/homr.zip` remains unchanged. Constructors use initialized session metadata; inference awaits the JavaScript model promises directly.
 
 Serve the root over HTTP; opening the HTML as a file does not support catalog/worker loading. The DOM suites mock audio and recognition dependencies; they verify lifecycle, searches, race conditions, validation, storage, and controls, not transcription accuracy or actual audible output.
 

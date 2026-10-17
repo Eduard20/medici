@@ -188,9 +188,9 @@ _parse_staff_image = staff_parsing.parse_staff_image
 _parsed = {}
 
 
-def _parse_staff_image_once(debug, index, staff, image, regions, config, page_to_input_image=staff_parsing.identity):
+async def _parse_staff_image_once(debug, index, staff, image, regions, config, page_to_input_image=staff_parsing.identity):
     if id(staff) not in _parsed:
-        symbols = _parse_staff_image(debug, index, staff, image, regions, config, page_to_input_image)
+        symbols = (await _parse_staff_image(debug, index, staff, image, regions, config, page_to_input_image))
         # Where the staff is on the photo, for marking a part: every note and
         # rest carries it (so a staff that only rests can still be marked).
         halves = getattr(staff, "halves", None) or (staff, staff)
@@ -211,7 +211,7 @@ def _parse_staff_image_once(debug, index, staff, image, regions, config, page_to
 staff_parsing.parse_staff_image = _parse_staff_image_once
 
 
-def _split_false_grand_staffs(debug, rows, image, config, page_to_input_image):
+async def _split_false_grand_staffs(debug, rows, image, config, page_to_input_image):
     regions = StaffRegions(rows)
     result = []
     for row in rows:
@@ -219,7 +219,7 @@ def _split_false_grand_staffs(debug, rows, image, config, page_to_input_image):
         for staff in row.staffs:
             halves = getattr(staff, "halves", None)
             if halves:
-                symbols = staff_parsing.parse_staff_image(debug, 0, staff, image, regions, config, page_to_input_image)
+                symbols = (await staff_parsing.parse_staff_image(debug, 0, staff, image, regions, config, page_to_input_image))
                 first = next((i for i, s in enumerate(symbols) if s.rhythm.startswith(("note", "rest"))), len(symbols))
                 clefs = {s.position: s.rhythm[5:6] for s in symbols[:first] if s.rhythm.startswith("clef")}
                 if clefs.get("lower") != "F":
@@ -261,16 +261,16 @@ def _user_systems(rows, page_to_input_image):
     return sorted(systems, key=lambda s: s.staffs[0].min_y)
 
 
-def _parse_staffs_by_layout(debug, staffs, image, config, selected_staff=-1, page_to_input_image=staff_parsing.identity):
+async def _parse_staffs_by_layout(debug, staffs, image, config, selected_staff=-1, page_to_input_image=staff_parsing.identity):
     _parsed.clear()
-    staffs = _split_false_grand_staffs(debug, staffs, image, config, page_to_input_image)
+    staffs = (await _split_false_grand_staffs(debug, staffs, image, config, page_to_input_image))
     if _user_ranges:
         staffs = _user_systems(staffs, page_to_input_image)
         runs = _runs_of_alike_rows(staffs)
     else:
         runs = _layout_runs(staffs)
     if len(runs) == 1 and not _user_ranges:
-        return _parse_staffs(debug, staffs, image, config, selected_staff, page_to_input_image)
+        return (await _parse_staffs(debug, staffs, image, config, selected_staff, page_to_input_image))
     regions = StaffRegions([row for run in runs for row in run])
     parts = {}  # (grand staff?, k-th of that kind) -> symbols
     order = []
@@ -290,7 +290,7 @@ def _parse_staffs_by_layout(debug, staffs, image, config, selected_staff=-1, pag
         for row in run:
             read = {}
             for key, staff in zip(keys, row.staffs):
-                symbols = staff_parsing.parse_staff_image(debug, index, staff, image, regions, config, page_to_input_image)
+                symbols = (await staff_parsing.parse_staff_image(debug, index, staff, image, regions, config, page_to_input_image))
                 index += 1
                 if symbols:
                     read[key] = symbols
@@ -358,8 +358,8 @@ def _drop_false_key_changes(symbols):
     return [s for r in rows for s in r]
 
 
-def _parse_staffs_fixed(*args, **kwargs):
-    return [_drop_false_key_changes(voice) for voice in _parse_staffs_by_layout(*args, **kwargs)]
+async def _parse_staffs_fixed(*args, **kwargs):
+    return [_drop_false_key_changes(voice) for voice in (await _parse_staffs_by_layout(*args, **kwargs))]
 
 
 homr_main.parse_staffs = _parse_staffs_fixed
@@ -446,19 +446,19 @@ from homr.transformer import decoder_inference  # noqa: E402
 _generate = decoder_inference.ScoreDecoder.generate
 
 
-def _generate_in_js(self, start_tokens, nonote_tokens, **kwargs):
+async def _generate_in_js(self, start_tokens, nonote_tokens, **kwargs):
     if self.fp16 or not hasattr(self.net, "_id"):  # not the browser's sessions
-        return _generate(self, start_tokens, nonote_tokens, **kwargs)
+        return (await _generate(self, start_tokens, nonote_tokens, **kwargs))
     import numpy as np
     from onnxruntime import _to_js_bytes
-    from pyodide.ffi import run_sync, to_js
+    from pyodide.ffi import to_js
 
     import js
 
     context = np.ascontiguousarray(kwargs["context"], dtype=np.float32)
     heads = self.config.decoder_heads
-    result = run_sync(
-        js.omrOrt.generate(
+    result = (
+        await js.omrOrt.generate(
             self.net._id,
             to_js(list(context.shape)),
             _to_js_bytes(context),
@@ -509,17 +509,17 @@ _CONFIG = ProcessingConfig(
 )
 
 
-def recognise(image_path, systems_json=""):
+async def recognise(image_path, systems_json=""):
     """systems_json: optional JSON list of [top, bottom] ranges on the image,
     one per system, from the user (see _user_systems)."""
     global _user_ranges
     _user_ranges = json.loads(systems_json) if systems_json else []
-    xml_path = process_image(image_path, _CONFIG, XmlGeneratorArguments())
+    xml_path = (await process_image(image_path, _CONFIG, XmlGeneratorArguments()))
     with open(xml_path, encoding="utf-8") as f:
         return f.read()
 
 
-def recognise_profiled(image_path, systems_json=""):
+async def recognise_profiled(image_path, systems_json=""):
     """recognise(), printing where the Python's time goes (tests/omr-bench.html)."""
     import cProfile
     import io
@@ -527,8 +527,10 @@ def recognise_profiled(image_path, systems_json=""):
 
     profile = cProfile.Profile()
     profile.enable()
-    out = recognise(image_path, systems_json)
-    profile.disable()
+    try:
+        out = (await recognise(image_path, systems_json))
+    finally:
+        profile.disable()
     s = io.StringIO()
     stats = pstats.Stats(profile, stream=s)
     stats.sort_stats("tottime").print_stats(25)

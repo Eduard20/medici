@@ -20,3 +20,11 @@ A private user-provided PDF was selected locally; the source PDF and generated t
 - Existing instrument, speed, and other studio settings survived converter handoff.
 - Unsupported-browser messaging, invalid input, oversized files, invalid ranges, cancellation races, MusicXML timing/ties/chords/staves, and existing player/storage behavior are covered by 100 deterministic tests.
 - Phone hardware, iOS, Safari, and Firefox were not available for end-to-end verification. Runtime feature detection disables unsupported browsers; API support is not a full compatibility guarantee. Recommend desktop Chrome/Edge and one page first.
+
+## No-JSPI async bridge verification
+
+The compatibility revision removes the Python `run_sync`/JavaScript `callPromising` dependency. In an isolated GitHub Pages test, the worker deleted `WebAssembly.Suspending`, `WebAssembly.promising`, and legacy `WebAssembly.Suspender` before loading any runtime. It used ONNX's plain WASM build, one WASM thread, no WebGPU, and no cross-origin isolation. Pyodide loaded with `enableRunUntilComplete: false`.
+
+The original synthetic PDF was rendered at 2479 × 3508 pixels with real PDF.js. Real segmentation, encoder, and decoder inference completed in 41,549 ms and produced MusicXML that the actual parser converted to valid MIDI: 8 notes, 2 measures, 100 BPM, 4.8 seconds. Pitches were `60,60,64,66,67,69,71,72`, exactly the previous JSPI engine's output, including its known two pitch errors. No recognition model or score was mocked. The compatibility test was run in cloud desktop Chromium, with JSPI APIs absent; this is not a physical iPhone or WebKit test.
+
+Deterministic tests cover unavailable-JSPI upload, ordinary awaited inference, model readiness, failure cleanup, GPU setup retry on WASM, and reproducible call-graph changes. Actual iPhone/iPad conversion, Safari/WebKit performance and mobile memory ceilings remain unverified. There is no browser-version gate or recommendation to upgrade to an unverified Safari version.

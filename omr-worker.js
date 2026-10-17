@@ -1,8 +1,7 @@
 // Adapted for Medici (2026-10-17) from Partsong © 2026 Paul Fremantle. AGPL-3.0.
-// Changes: verified external model downloads, memory cache fallback, bounded retry and cleanup.
+// Changes: verified downloads, bounded retry/cleanup, and async Python bridge.
 // Module worker. Runs homr (Python, via Pyodide) with its ONNX models on onnxruntime-web.
-// Python blocks on model calls through JSPI, so this needs a JSPI-capable
-// browser (Chrome/Edge 137+).
+// Python awaits model calls normally, including on browsers without JSPI.
 
 const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
@@ -150,13 +149,19 @@ let lastKept = 0;
 
 async function newSession(id) {
   const name = sessionNames[id];
-  const gpu = useGpu && GPU_MODELS.has(name);
-  const eps = gpu ? ["webgpu", "wasm"] : ["wasm"];
+  let gpu = useGpu && GPU_MODELS.has(name);
+  let eps = gpu ? ["webgpu", "wasm"] : ["wasm"];
   const t0 = performance.now();
-  const session = await ort.InferenceSession.create(await modelBytes(name), {
-    executionProviders: eps,
-    graphOptimizationLevel: "all",
-  });
+  const bytes = await modelBytes(name);
+  let session;
+  try {
+    session = await ort.InferenceSession.create(bytes, {executionProviders: eps, graphOptimizationLevel: "all"});
+  } catch (error) {
+    if (!gpu) throw error;
+    post({type:"log", msg:`WebGPU model setup failed (${error.message}); using WASM`});
+    useGpu = false; gpu = false; eps = ["wasm"];
+    session = await ort.InferenceSession.create(bytes, {executionProviders: eps, graphOptimizationLevel: "all"});
+  }
   if (gpu) onGpu.add(id);
   else onGpu.delete(id);
   post({ type: "log", msg: `Loaded ${name} on ${eps[0]} in ${Math.round(performance.now() - t0)} ms` });
@@ -165,6 +170,12 @@ async function newSession(id) {
 
 // Called from omr/onnxruntime.py.
 self.omrOrt = {
+  info(name) {
+    const id = sessionIds.get(name);
+    if (id === undefined) throw new Error(`Recognition model is not ready: ${name}`);
+    const s = sessions[id];
+    return { id, inputNames: s.inputNames, outputNames: s.outputNames };
+  },
   async create(name) {
     if (!sessionIds.has(name)) {
       const id = sessions.length;
@@ -172,8 +183,7 @@ self.omrOrt = {
       sessions[id] = await newSession(id);
       sessionIds.set(name, id);
     }
-    const s = sessions[sessionIds.get(name)];
-    return { id: sessionIds.get(name), inputNames: s.inputNames, outputNames: s.outputNames };
+    return self.omrOrt.info(name);
   },
 
   // feeds: [name, type, dims, bytes], or [name, "kept", handle] for an output
@@ -296,20 +306,21 @@ let recogniseProfiled;
 let runTimes = [];
 
 async function init() {
-  if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
-    throw new Error("This browser lacks WebAssembly JSPI. Use an up-to-date Chrome.");
-  }
-  ort = await import(ORT_URL + "ort.webgpu.min.mjs");
+  // ONNX's WebGPU build needs its own JSPI/Asyncify runtime. Use the smaller
+  // plain WASM build on non-JSPI browsers (including older iOS WebKit), which
+  // also avoids the WebKit Asyncify compilation/memory issue upstream #26827.
+  const jspi = typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function";
+  ort = await import(ORT_URL + (jspi ? "ort.webgpu.min.mjs" : "ort.wasm.min.mjs"));
   ort.env.wasm.wasmPaths = ORT_URL;
   ort.env.wasm.numThreads = self.crossOriginIsolated
     ? Math.min(4, navigator.hardwareConcurrency || 1)
     : 1;
   post({ type: "log", msg: `WASM threads: ${ort.env.wasm.numThreads}` });
   const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
-  try { useGpu = !!(self.navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { useGpu = false; }
+  try { useGpu = !!(jspi && self.navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { useGpu = false; }
 
   post({ type: "progress", stage: "python" });
-  pyodide = await loadPyodide({ indexURL: PYODIDE_URL });
+  pyodide = await loadPyodide({ indexURL: PYODIDE_URL, enableRunUntilComplete: false });
   pyodide.setStderr({ batched: (msg) => post({ type: "log", msg }) });
   pyodide.setStdout({ batched: (msg) => post({ type: "log", msg }) });
   await pyodide.loadPackage(["numpy", "opencv-python", "pillow", "typing-extensions"]);
@@ -318,7 +329,7 @@ async function init() {
   pyodide.FS.mkdirTree(lib);
   // Same deploy version as this worker (?v=… from scripts/stamp-version.mjs).
   const v = location.search;
-  const homrZip = await (await fetch("vendor/homr.zip" + v)).arrayBuffer();
+  const homrZip = await (await fetch("vendor/homr-async.zip" + v)).arrayBuffer();
   pyodide.unpackArchive(homrZip, "zip", { extractDir: lib });
   const version = new URLSearchParams(v).get("v");
   for (const f of ["onnxruntime.py", "runner.py"]) {
@@ -338,6 +349,10 @@ async function init() {
   for (const name of MODELS) {
     await downloadModel(name);
   }
+  post({ type: "progress", stage: "models" });
+  // Python constructors remain synchronous and read this already-loaded metadata.
+  // All inference is awaited by the async homr call chain.
+  for (const name of MODELS) await self.omrOrt.create(name);
   post({ type: "ready", gpu: useGpu });
 }
 
@@ -356,8 +371,15 @@ self.onmessage = async ({ data }) => {
       // data.systems: the user's systems for this page (JSON), if they fixed it.
       // data.profile (tests/omr-bench.html): logs where the Python's time goes.
       let xml;
-      try { xml = await (data.profile ? recogniseProfiled : recognise).callPromising(path, data.systems ?? ""); }
-      finally { for (const f of pyodide.FS.readdir("/tmp")) if (f.startsWith("page")) { try { pyodide.FS.unlink("/tmp/" + f); } catch {} } }
+      let task;
+      try {
+        task = (data.profile ? recogniseProfiled : recognise)(path, data.systems ?? "");
+        xml = await task;
+      }
+      finally {
+        task?.destroy?.();
+        for (const f of pyodide.FS.readdir("/tmp")) if (f.startsWith("page")) { try { pyodide.FS.unlink("/tmp/" + f); } catch {} }
+      }
       const ms = Math.round(performance.now() - t0);
       const names = [...sessionIds.keys()];
       const parts = names.map((n) => `${n.split("_")[0]} ${Math.round(runTimes[sessionIds.get(n)]?.ms ?? 0)} ms/${runTimes[sessionIds.get(n)]?.calls ?? 0} calls`);

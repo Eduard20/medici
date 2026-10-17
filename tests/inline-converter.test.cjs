@@ -9,7 +9,7 @@ function setup(options={}) {
  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'fixtures/inline-pdf.html'),'utf8'),{url:'https://example.test/medici/',runScripts:'outside-only'});
  const w=dom.window,d=w.document,events=[],workers=[],readPages=[];let loads=0,parseCount=0,started=0,releaseDestroy;
  const destroyGate=options.holdDestroy?new Promise(r=>releaseDestroy=r):Promise.resolve();
- w.WebAssembly={Suspending:options.unsupported?undefined:function(){},promising:options.unsupported?undefined:function(){}};
+ w.WebAssembly={instantiate:options.unsupported?undefined:function(){},Suspending:options.noJSPI?undefined:function(){},promising:options.noJSPI?undefined:function(){}};
  Object.defineProperty(w.crypto,'subtle',{value:{}});
  w.HTMLCanvasElement.prototype.toBlob=function(cb){cb({arrayBuffer:async()=>new w.ArrayBuffer(4)});};
  const page={getViewport:({scale})=>({width:595*scale,height:842*scale}),render:()=>({promise:Promise.resolve(),cancel(){}}),cleanup(){}};
@@ -30,7 +30,8 @@ function setup(options={}) {
  };
  return {w,d,events,workers,readPages,select,loads:()=>loads,parseCount:()=>parseCount,started:()=>started,releaseDestroy:()=>releaseDestroy?.(),close:()=>dom.window.close()};
 }
-test('inline PDF unsupported state disables upload but leaves useful compatibility text',()=>{const t=setup({unsupported:true});assert.equal(t.d.getElementById('sheet-pdf').disabled,true);assert.match(t.d.getElementById('sheet-status').textContent,/Chrome or Edge/);t.select();assert.equal(t.loads(),0);t.close();});
+test('inline PDF unsupported state disables upload but leaves useful compatibility text',()=>{const t=setup({unsupported:true});assert.equal(t.d.getElementById('sheet-pdf').disabled,true);assert.match(t.d.getElementById('sheet-status').textContent,/WebAssembly, web workers/);t.select();assert.equal(t.loads(),0);t.close();});
+test('browsers without JSPI can upload and complete the async recognition flow',async()=>{const t=setup({noJSPI:true});assert.equal(t.w.WebAssembly.Suspending,undefined);assert.equal(t.w.WebAssembly.promising,undefined);assert.equal(t.d.getElementById('sheet-pdf').disabled,false);t.select();await tick();assert.equal(t.events.length,1);assert.equal(t.workers[0].terminated,true);t.close();});
 test('selecting PDF starts conversion automatically and emits MIDI without navigation',async()=>{const t=setup();t.select();assert.equal(t.started(),1);assert.equal(t.d.getElementById('sheet-cancel').hidden,false);await tick();assert.equal(t.events.length,1);assert.equal(t.events[0].name,'score · experimental.mid');assert.equal(t.events[0].bytes.byteLength,4);assert.deepEqual(t.readPages,[1,2]);assert.equal(t.parseCount(),2);assert.equal(t.w.location.href,'https://example.test/medici/');assert.match(t.d.getElementById('sheet-status').textContent,/Choose an instrument/);assert.equal(t.d.getElementById('sheet-cancel').hidden,true);assert.equal(t.d.getElementById('sheet-download').hidden,false);assert.equal(t.workers[0].terminated,true);t.close();});
 test('default page selection caps long scores at three and explains the selection',async()=>{const t=setup({pages:8});t.select();await tick();assert.deepEqual(t.readPages,[1,2,3]);assert.match(t.events[0].name,/pages 1–3/);assert.match(t.d.getElementById('sheet-warnings').textContent,/Only pages 1–3 of 8/);t.close();});
 test('advanced selection respects starting page, count and tempo',async()=>{const t=setup({pages:8});t.d.getElementById('sheet-first').value='4';t.d.getElementById('sheet-count').value='2';t.d.getElementById('sheet-tempo').value='120';t.select();await tick();assert.deepEqual(t.readPages,[4,5]);assert.equal(t.events[0].summary.tempo,120);t.close();});

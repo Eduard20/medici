@@ -1288,7 +1288,7 @@ function installInlineConversion(h, { holdRecognition = false } = {}) {
     '<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>' +
     '<note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration></note>' +
     '<note><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration></note></measure></part></score-partwise>';
-  w.WebAssembly = { Suspending() {}, promising() {} };
+  w.WebAssembly = { instantiate() {} };
   Object.defineProperty(w.crypto, 'subtle', { value: {}, configurable: true });
   w.HTMLCanvasElement.prototype.toBlob = function (callback) {
     callback({ arrayBuffer: async () => new w.ArrayBuffer(4) });
@@ -1387,3 +1387,4 @@ test('clearing the current score cancels inline recognition and prevents its lat
   assert.equal(storageValue(h.storage, 'pdf-arrangement'), undefined);
   assert.equal(h.noteCalls.length, 0);
 });
+

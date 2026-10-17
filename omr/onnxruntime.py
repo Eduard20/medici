@@ -1,15 +1,15 @@
 """Minimal stand-in for the `onnxruntime` package inside Pyodide.
 
-homr only uses InferenceSession + IOBinding + OrtValue. Each call is forwarded
-to onnxruntime-web through `self.omrOrt` (defined in omr-worker.js) and blocks
-on the JS promise via JSPI (`run_sync`).
+homr only uses InferenceSession + IOBinding + OrtValue. Model calls await
+onnxruntime-web through `self.omrOrt` (defined in omr-worker.js). No JSPI or
+SharedArrayBuffer is needed. Session metadata is prepared before recognition.
 """
 
 import os
 
 import js
 import numpy as np
-from pyodide.ffi import run_sync, to_js
+from pyodide.ffi import to_js
 
 _DTYPES = {
     "float32": np.float32,
@@ -90,7 +90,7 @@ def _to_js_bytes(array):
 
 class InferenceSession:
     def __init__(self, path, *args, **kwargs):
-        info = run_sync(js.omrOrt.create(os.path.basename(path)))
+        info = js.omrOrt.info(os.path.basename(path))
         self._id = info.id
         self._inputs = [_NodeArg(n) for n in info.inputNames.to_py()]
         self._outputs = [_NodeArg(n) for n in info.outputNames.to_py()]
@@ -104,24 +104,24 @@ class InferenceSession:
     def io_binding(self):
         return IOBinding(self)
 
-    def run(self, output_names, feeds, *args, **kwargs):
+    async def run(self, output_names, feeds, *args, **kwargs):
         names = output_names or [o.name for o in self._outputs]
-        return [v.numpy() for v in self._run(names, feeds)]
+        return [v.numpy() for v in await self._run(names, feeds)]
 
-    def run_with_iobinding(self, iobinding=None, *args, **kwargs):
+    async def run_with_iobinding(self, iobinding=None, *args, **kwargs):
         # homr's decoder cache ("cache_out*") only goes back in on the next
         # step, so it stays on the JS side (see omr-worker.js).
         keep = [n for n in iobinding._output_names if n.startswith("cache_out")]
-        iobinding._outputs = self._run(iobinding._output_names, iobinding._inputs, keep)
+        iobinding._outputs = await self._run(iobinding._output_names, iobinding._inputs, keep)
 
-    def _run(self, names, feeds, keep=()):
+    async def _run(self, names, feeds, keep=()):
         js_feeds = [
             to_js([name, "kept", a._handle, None])
             if isinstance(a, OrtValue)
             else to_js([name, str(a.dtype), list(a.shape), _to_js_bytes(a)])
             for name, a in feeds.items()
         ]
-        results = run_sync(js.omrOrt.run(self._id, to_js(names), to_js(js_feeds), to_js(list(keep))))
+        results = await js.omrOrt.run(self._id, to_js(names), to_js(js_feeds), to_js(list(keep)))
         outputs = []
         for r in results:
             dtype = _DTYPES[r.type]
