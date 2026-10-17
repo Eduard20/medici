@@ -56,7 +56,7 @@ const server = http.createServer((req, res) => {
  await page.locator('#midi-file').setInputFiles({name:'recording.mp3',mimeType:'audio/mpeg',buffer:Buffer.from('fake')});
  await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('MP3'));
  await page.locator('#load-video').click();
- assert.match(await page.locator('#youtube-player').getAttribute('src'),/youtube-nocookie.com\/embed\/Y3zOQWJReJU/);
+ assert.match(await page.locator('#youtube-player').getAttribute('src'),/youtube-nocookie.com\/embed\/QVOhsRnkLZA/);
  assert.equal(await page.locator('#youtube-player').isVisible(),true);
  await page.setViewportSize({width:390,height:844});
  await page.reload({waitUntil:'networkidle'});

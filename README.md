@@ -46,7 +46,7 @@ An optional browser smoke test is in `tests/browser-smoke.cjs`. Run `npx playwri
 
 ## Third-party sources and licenses
 
-- Official recording: [Love For Duty — Paolo Buonvino](https://www.youtube.com/watch?v=Y3zOQWJReJU), provided to YouTube by Universal Music Group. All music rights remain with the respective owners.
+- Official recording: [Love For Duty — Paolo Buonvino](https://www.youtube.com/watch?v=QVOhsRnkLZA), provided to YouTube by Universal Music Group. All music rights remain with the respective owners.
 - MIDI parsing: [@tonejs/midi](https://github.com/Tonejs/Midi), version 2.0.28, MIT; license in `vendor/midi-LICENSE`.
 - Sample playback: [soundfont-player](https://github.com/danigb/soundfont-player), version 0.12.0, MIT; license in `vendor/soundfont-player-LICENSE`.
 - Samples: FluidR3_GM by Frank Wen and contributors, hosted by [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Samples are loaded on demand from `gleitz.github.io`; they are not vendored here. They are not covered by the code libraries' MIT licenses.

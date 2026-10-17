@@ -485,7 +485,7 @@ test('opening the official recording stops arrangement playback and lazily creat
   assert.equal(h.get('play-text').textContent, 'Play arrangement');
   const frame = h.w.document.querySelector('iframe');
   assert.ok(frame);
-  assert.match(frame.src, /^https:\/\/www\.youtube-nocookie\.com\/embed\/Y3zOQWJReJU\?/);
+  assert.match(frame.src, /^https:\/\/www\.youtube-nocookie\.com\/embed\/QVOhsRnkLZA\?/);
   assert.equal(h.get('video-placeholder').hidden, true);
   assert.ok(h.w.document.querySelector('script[src="https://www.youtube.com/iframe_api"]'));
 });

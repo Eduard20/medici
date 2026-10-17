@@ -21,7 +21,7 @@
     $('youtube-player').hidden = false;
     const frame = document.createElement('iframe');
     frame.id = 'youtube-player'; frame.title = 'Love For Duty · Paolo Buonvino · official recording';
-    frame.src = `https://www.youtube-nocookie.com/embed/Y3zOQWJReJU?autoplay=1&enablejsapi=1&playsinline=1&origin=${encodeURIComponent(location.origin)}`;
+    frame.src = `https://www.youtube-nocookie.com/embed/QVOhsRnkLZA?autoplay=1&enablejsapi=1&playsinline=1&origin=${encodeURIComponent(location.origin)}`;
     frame.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
     frame.allowFullscreen = true; frame.referrerPolicy = 'strict-origin-when-cross-origin';
     $('youtube-player').replaceWith(frame);
