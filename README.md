@@ -8,11 +8,16 @@ A polished, responsive, static web app for **Love For Duty** by Paolo Buonvino, 
 - A separate instrument studio with 128 General MIDI sampled instruments, including guitar, violin, piano, cello, harp, and flute.
 - Local `.mid`/`.midi` import, melodic-part selection, playback/pause, seek, restart, loop, speed, volume, and transposition.
 - Instrument preview plays a short C-major arpeggio, clearly labelled as a preview rather than the song.
-- Imported files are processed only in the browser. They are not uploaded or stored on a server.
+- Imported MIDI is saved in IndexedDB on this device and browser, then restored on later visits without autoplay. It is never uploaded or added to this public repository.
+- Instrument, speed, transpose, volume, and loop settings are remembered locally.
+- **Remove saved MIDI** deletes the saved arrangement and clears the player. The original file is unchanged.
+- Storage failures do not prevent playback for the current visit, and the app does not claim a failed save succeeded.
 
 ## Important distinction
 
 **The app does not convert the official audio recording into another instrument.** A MIDI arrangement is required to replay the song's notes on different instruments. No exact-song MIDI arrangement is bundled because a redistributable arrangement was not available. Import your own arrangement, or one you have permission to use. Drum tracks are excluded. Pitch-bend, sustain-pedal automation, and performance articulations are not currently reproduced.
+
+Browser storage is device/browser-specific, is not a cloud backup, and may be erased by clearing site data, private browsing, storage eviction, or browser settings. A one-time MIDI import is still required. If a replacement cannot be saved, the previous saved arrangement may reappear on reload; the app warns about this.
 
 The soundtrack is streamed by YouTube, not copied into this repository. The player requires an internet connection and remains subject to YouTube availability, regional restrictions, and ads.
 

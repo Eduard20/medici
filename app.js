@@ -9,6 +9,110 @@
   let youtube = null;
   let youtubeLoad = false;
   let importToken = 0;
+  let preferencesRevision = 0;
+  let preferencesTimer = null;
+  let databasePromise = null;
+  let storageQueue = Promise.resolve();
+  let knownInstruments = null;
+  const storageStatus = (message, error = false) => {
+    $('storage-status').textContent = message;
+    $('storage-status').classList.toggle('error', error);
+  };
+  function database() {
+    if (!databasePromise) {
+      databasePromise = new Promise((resolve, reject) => {
+        if (!window.indexedDB) { reject(new Error('Browser storage is unavailable.')); return; }
+        let settled = false;
+        const fail = error => { if (!settled) { settled = true; clearTimeout(timeout); reject(error || new Error('Browser storage is unavailable.')); } };
+        const timeout = setTimeout(() => fail(new Error('Browser storage did not respond.')), 8000);
+        let request;
+        try { request = indexedDB.open('medici-listening-room', 1); } catch (error) { fail(error); return; }
+        request.onupgradeneeded = () => {
+          if (!request.result.objectStoreNames.contains('local')) request.result.createObjectStore('local');
+        };
+        request.onerror = () => fail(request.error);
+        request.onblocked = () => fail(new Error('Close other Medici tabs and try again.'));
+        request.onsuccess = () => {
+          if (settled) { request.result.close(); return; }
+          settled = true; clearTimeout(timeout);
+          const db = request.result;
+          db.onversionchange = () => { db.close(); databasePromise = null; };
+          resolve(db);
+        };
+      });
+      databasePromise.catch(() => { databasePromise = null; });
+    }
+    return databasePromise;
+  }
+  async function stored(key, mode = 'readonly', value, remove = false) {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      let transaction, result, settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true; clearTimeout(timeout);
+        if (error) reject(error); else resolve(result);
+      };
+      const timeout = setTimeout(() => {
+        try { transaction?.abort(); } catch {}
+        finish(new Error('Browser storage did not respond.'));
+      }, 8000);
+      try {
+        transaction = db.transaction('local', mode);
+        const store = transaction.objectStore('local');
+        const request = mode === 'readonly' ? store.get(key) : remove ? store.delete(key) : store.put(value, key);
+        request.onsuccess = () => { result = request.result; };
+        transaction.oncomplete = () => finish();
+        transaction.onerror = () => finish(transaction.error || new Error('Browser storage failed.'));
+        transaction.onabort = () => finish(transaction.error || new Error('Browser storage was interrupted.'));
+      } catch (error) { finish(error); }
+    });
+  }
+  function saveStored(key, value, remove = false) {
+    const next = storageQueue.catch(() => {}).then(() => stored(key, 'readwrite', value, remove));
+    storageQueue = next;
+    return next;
+  }
+  function preferences() {
+    return {version: 1, instrument: state.instrument, speed: state.speed, transpose: state.transpose,
+      volume: Number($('volume').value), loop: state.loop};
+  }
+  function rememberPreferences() {
+    preferencesRevision++;
+    clearTimeout(preferencesTimer);
+    preferencesTimer = setTimeout(() => {
+      preferencesTimer = null;
+      saveStored('preferences', preferences()).catch(() => {
+        storageStatus('This browser could not remember your latest settings. Your current playback still works.', true);
+      });
+    }, 250);
+  }
+  function restorePreferences(saved) {
+    if (!saved || saved.version !== 1) return;
+    if (typeof saved.instrument === 'string' && /^[a-z][a-z_0-9]{0,60}$/.test(saved.instrument) && (!knownInstruments || knownInstruments.includes(saved.instrument))) {
+      state.instrument = saved.instrument;
+      // The complete catalog may arrive later; keep the selected value visible meanwhile.
+      if (![...$('instrument-select').options].some(option => option.value === saved.instrument))
+        $('instrument-select').add(new Option(label(saved.instrument), saved.instrument));
+      $('instrument-select').value = saved.instrument;
+      $('instrument-badge').textContent = label(saved.instrument).replace('Acoustic grand ', '').toUpperCase();
+      document.querySelectorAll('[data-instrument]').forEach(button => {
+        const active = button.dataset.instrument === saved.instrument;
+        button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
+      });
+    }
+    if (Number.isFinite(saved.speed) && saved.speed >= .5 && saved.speed <= 1.5) {
+      state.speed = saved.speed; $('speed').value = saved.speed; $('speed-value').textContent = saved.speed.toFixed(2) + '×';
+    }
+    if ([...$('transpose').options].some(option => Number(option.value) === saved.transpose)) {
+      state.transpose = saved.transpose; $('transpose').value = saved.transpose;
+    }
+    if (Number.isFinite(saved.volume) && saved.volume >= 0 && saved.volume <= 100) {
+      $('volume').value = saved.volume; $('volume-value').textContent = saved.volume + '%';
+      if (state.gain) state.gain.gain.setTargetAtTime(saved.volume / 100 * .65, state.context.currentTime, .02);
+    }
+    if (typeof saved.loop === 'boolean') { state.loop = saved.loop; $('loop').setAttribute('aria-pressed', String(saved.loop)); }
+  }
 
   function pauseOriginal() {
     if (youtube && typeof youtube.pauseVideo === 'function') youtube.pauseVideo();
@@ -152,13 +256,14 @@
       const active = button.dataset.instrument === name; button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
     });
     status(`${label(name)} selected. ${state.notes.length ? 'Play your arrangement or preview this sound.' : 'Preview its sound, or load a MIDI arrangement.'}`);
+    rememberPreferences();
     if (resume) play();
   }
   document.querySelectorAll('[data-instrument]').forEach(button => button.addEventListener('click', () => selectInstrument(button.dataset.instrument)));
   $('instrument-select').addEventListener('change', event => selectInstrument(event.target.value));
   $('preview').addEventListener('click', preview); $('play').addEventListener('click', play);
   $('restart').addEventListener('click', () => { const resume = state.playing || state.loading; stop(true); stopPreview(); if (resume) play(); else status('Back at the beginning.'); });
-  $('loop').addEventListener('click', () => { state.loop = !state.loop; $('loop').setAttribute('aria-pressed', String(state.loop)); status(state.loop ? 'Loop on.' : 'Loop off.'); });
+  $('loop').addEventListener('click', () => { state.loop = !state.loop; $('loop').setAttribute('aria-pressed', String(state.loop)); status(state.loop ? 'Loop on.' : 'Loop off.'); rememberPreferences(); });
   let seeking = false, resumeAfterSeek = false;
   const beginSeek = () => { if (!seeking) { resumeAfterSeek = state.playing || state.loading; stop(false); stopPreview(); seeking = true; } };
   const endSeek = () => { if (!seeking) return; seeking = false; const resume = resumeAfterSeek; resumeAfterSeek = false; if (resume) play(); };
@@ -168,9 +273,9 @@
   $('seek').addEventListener('pointerup', endSeek);
   $('seek').addEventListener('pointercancel', endSeek);
   $('seek').addEventListener('blur', endSeek);
-  $('speed').addEventListener('input', event => { const resume = state.playing || state.loading; stop(false); stopPreview(); state.speed = Number(event.target.value); $('speed-value').textContent = state.speed.toFixed(2) + '×'; if (resume) play(); });
-  $('transpose').addEventListener('change', event => { const resume = state.playing || state.loading; stop(false); stopPreview(); state.transpose = Number(event.target.value); if (resume) play(); });
-  $('volume').addEventListener('input', event => { $('volume-value').textContent = event.target.value + '%'; if (state.gain) state.gain.gain.setTargetAtTime(Number(event.target.value) / 100 * .65, state.context.currentTime, .02); });
+  $('speed').addEventListener('input', event => { const resume = state.playing || state.loading; stop(false); stopPreview(); state.speed = Number(event.target.value); $('speed-value').textContent = state.speed.toFixed(2) + '×'; rememberPreferences(); if (resume) play(); });
+  $('transpose').addEventListener('change', event => { const resume = state.playing || state.loading; stop(false); stopPreview(); state.transpose = Number(event.target.value); rememberPreferences(); if (resume) play(); });
+  $('volume').addEventListener('input', event => { $('volume-value').textContent = event.target.value + '%'; if (state.gain) state.gain.gain.setTargetAtTime(Number(event.target.value) / 100 * .65, state.context.currentTime, .02); rememberPreferences(); });
 
   function loadPart() {
     stop(true); stopPreview();
@@ -183,6 +288,29 @@
     updateTransport();
   }
   $('track').addEventListener('change', () => { loadPart(); status('MIDI part selected. Ready to play.'); });
+  function parseScore(bytes) {
+    if (!window.Midi) throw new Error('MIDI parser could not load. Refresh the page.');
+    if (!(bytes instanceof ArrayBuffer) || bytes.byteLength > 5 * 1024 * 1024) throw new Error('Use a MIDI file under 5 MB.');
+    const midi = new Midi(bytes);
+    const playable = midi.tracks.filter(track => !track.instrument.percussion && track.notes.length);
+    const count = playable.reduce((sum, track) => sum + track.notes.length, 0);
+    if (!count) throw new Error('This file has no melodic notes. Drum-only and empty MIDI files cannot be played in this studio.');
+    if (count > 100000) throw new Error('This MIDI has too many notes. Use a shorter arrangement with fewer than 100,000 notes.');
+    const duration = playable.reduce((max, track) => track.notes.reduce((end, note) => Math.max(end, note.time + note.duration), max), 0);
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 7200) throw new Error('Use a valid MIDI arrangement shorter than two hours.');
+    return midi;
+  }
+  function showScore(midi, name, restored = false) {
+    state.score = midi;
+    $('track').replaceChildren(new Option('All melodic parts', 'all'));
+    midi.tracks.forEach((track, index) => { if (!track.instrument.percussion && track.notes.length) $('track').add(new Option(track.name || `Part ${index + 1} · ${track.instrument.name}`, String(index))); });
+    $('track').disabled = false;
+    $('score-name').textContent = name.replace(/\.midi?$/i, '');
+    $('file-title').textContent = name;
+    $('file-description').textContent = restored ? 'Restored from this browser. Ready whenever you are.' : 'Loaded locally. Choose another file any time.';
+    $('clear-midi').hidden = false;
+    loadPart();
+  }
   async function importFile(file) {
     if (!file) return;
     const token = ++importToken;
@@ -190,26 +318,66 @@
     if (file.size > 5 * 1024 * 1024) { status('This file is too large. Choose a MIDI file under 5 MB.', true); return; }
     stop(false); stopPreview();
     try {
-      if (!window.Midi) throw new Error('MIDI parser could not load. Refresh the page.');
       const bytes = await file.arrayBuffer();
       if (token !== importToken) return;
-      const midi = new Midi(bytes);
-      const playable = midi.tracks.filter(track => !track.instrument.percussion && track.notes.length);
-      const count = playable.reduce((sum, track) => sum + track.notes.length, 0);
-      if (!count) throw new Error('This file has no melodic notes. Drum-only and empty MIDI files cannot be played in this studio.');
-      if (count > 100000) throw new Error('This MIDI has too many notes. Use a shorter arrangement with fewer than 100,000 notes.');
-      const duration = playable.reduce((max, track) => track.notes.reduce((end, note) => Math.max(end, note.time + note.duration), max), 0);
-      if (!Number.isFinite(duration) || duration <= 0 || duration > 7200) throw new Error('Use a valid MIDI arrangement shorter than two hours.');
-      state.score = midi;
-      $('track').replaceChildren(new Option('All melodic parts', 'all'));
-      midi.tracks.forEach((track, index) => { if (!track.instrument.percussion && track.notes.length) $('track').add(new Option(track.name || `Part ${index + 1} · ${track.instrument.name}`, String(index))); });
-      $('track').disabled = false;
-      $('score-name').textContent = file.name.replace(/\.midi?$/i, '');
-      $('file-title').textContent = file.name;
-      $('file-description').textContent = 'Loaded locally. Choose another file any time.';
-      loadPart(); status('MIDI ready. Choose an instrument and press Play arrangement. Drum tracks are excluded.');
+      const midi = parseScore(bytes);
+      showScore(midi, file.name);
+      status('MIDI ready. Choose an instrument and press Play arrangement. Drum tracks are excluded.');
+      storageStatus('Saving privately in this browser…');
+      try {
+        await saveStored('arrangement', {version: 1, name: file.name, bytes});
+        if (token !== importToken) return;
+        $('file-description').textContent = 'Saved in this browser. It will be here next visit.';
+        storageStatus('Saved on this device, in this browser only. Nothing was uploaded.');
+      } catch {
+        if (token !== importToken) return;
+        storageStatus('Couldn’t save this MIDI. You can play it for this visit. A previously saved file may return on reload.', true);
+      }
     } catch (error) { if (token !== importToken) return; status(`Couldn’t import this MIDI. ${String(error?.message || error).slice(0, 180)}`, true); }
   }
+  async function restoreSaved() {
+    const token = importToken, revision = preferencesRevision;
+    const preferencesRead = stored('preferences').then(saved => {
+      if (preferencesRevision === revision) restorePreferences(saved);
+    }).catch(() => {});
+    try {
+      const saved = await stored('arrangement');
+      if (token !== importToken) return;
+      if (!saved) { storageStatus('Import once to save your MIDI privately in this browser.'); return; }
+      $('clear-midi').hidden = false;
+      if (saved.version !== 1 || typeof saved.name !== 'string' || !/\.midi?$/i.test(saved.name)) throw new Error('Saved file is not a supported MIDI record.');
+      const midi = parseScore(saved.bytes);
+      if (token !== importToken) return;
+      showScore(midi, saved.name, true);
+      status('Your saved MIDI is ready. Choose an instrument and press Play arrangement.');
+      storageStatus('Restored from this browser. Nothing was uploaded.');
+    } catch {
+      if (token !== importToken) return;
+      storageStatus('Couldn’t restore saved MIDI. You can still import and play a file. If a saved file is damaged, remove it and import again.', true);
+    }
+    await preferencesRead;
+  }
+  $('clear-midi').addEventListener('click', async () => {
+    const token = ++importToken;
+    stop(true); stopPreview();
+    state.score = null; state.notes = []; state.duration = 0; state.offset = 0;
+    $('track').replaceChildren(new Option('All melodic parts', 'all')); $('track').disabled = true;
+    $('score-name').textContent = 'No MIDI loaded'; $('score-meta').textContent = 'Choose a file to begin.';
+    $('file-title').textContent = 'Your arrangement starts here.';
+    $('file-description').textContent = 'Choose a MIDI file once. Keep it privately in this browser.';
+    $('seek').max = '1'; updateTransport();
+    status('Arrangement removed from the player.'); storageStatus('Removing the saved MIDI…');
+    $('clear-midi').disabled = true;
+    try {
+      await saveStored('arrangement', undefined, true);
+      if (token !== importToken) return;
+      $('clear-midi').hidden = true;
+      storageStatus('Saved MIDI removed from this browser. Your original file is unchanged.');
+    } catch {
+      if (token !== importToken) return;
+      storageStatus('Couldn’t remove the saved copy. Try Remove saved MIDI again, or clear this site’s browser storage.', true);
+    } finally { $('clear-midi').disabled = false; }
+  });
   $('midi-file').addEventListener('change', event => { importFile(event.target.files[0]); event.target.value = ''; });
   const drop = $('file-zone');
   ['dragenter', 'dragover'].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.add('dragging'); }));
@@ -217,9 +385,16 @@
   drop.addEventListener('drop', event => importFile(event.dataTransfer.files[0]));
   document.addEventListener('dragover', event => event.preventDefault());
   document.addEventListener('drop', event => event.preventDefault());
-  window.addEventListener('pagehide', () => { stop(false); stopPreview(); });
+  window.addEventListener('pagehide', () => {
+    stop(false); stopPreview();
+    if (preferencesTimer !== null) { clearTimeout(preferencesTimer); preferencesTimer = null; saveStored('preferences', preferences()).catch(() => {}); }
+  });
   fetch('instruments.json').then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(names => {
-    const select = $('instrument-select'); select.replaceChildren(...names.map(name => new Option(label(name), name))); select.value = state.instrument;
+    knownInstruments = names;
+    const select = $('instrument-select'); select.replaceChildren(...names.map(name => new Option(label(name), name)));
+    if (!names.includes(state.instrument)) restorePreferences({version: 1, instrument: 'acoustic_grand_piano'});
+    select.value = state.instrument;
   }).catch(() => status('The full instrument list could not load. Featured instruments are still available.', true));
   updateTransport();
+  restoreSaved();
 })();

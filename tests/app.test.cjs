@@ -20,7 +20,8 @@ const appSource = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const midiSource = fs.readFileSync(path.join(root, 'vendor/midi.js'), 'utf8');
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'instruments.json'), 'utf8'));
 const { Midi } = require('../vendor/midi.js');
-const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const { createStorage } = require('./storage-mock.cjs');
+const flush = async () => { for (let i = 0; i < 64; i++) await Promise.resolve(); };
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8,
   `Expected ${actual} to be approximately ${expected}`);
 function deferred() {
@@ -56,6 +57,8 @@ async function harness(t, options = {}) {
   // No resource loading: all network and audio surfaces are deterministic mocks.
   const dom = new JSDOM(html, { url: 'https://medici.example/', runScripts: 'outside-only' });
   const w = dom.window;
+  const storage = options.storage || createStorage();
+  storage.install(w, { unavailable: options.noStorage, localUnavailable: options.noLocalStorage });
   const errors = [], noteCalls = [], instrumentCalls = [], contexts = [], fetchCalls = [];
   const waits = new Map(), players = new Map(), timers = new Map();
   let now = 0, nextTimer = 1;
@@ -150,7 +153,7 @@ async function harness(t, options = {}) {
   });
   await flush();
   return {
-    w, get, change, upload, advance, noteCalls, instrumentCalls, contexts, fetchCalls,
+    w, get, change, upload, advance, noteCalls, instrumentCalls, contexts, fetchCalls, storage,
     click: id => get(id).click(),
     choose: name => w.document.querySelector(`[data-instrument="${name}"]`).click(),
     status: () => get('status').textContent,
@@ -609,4 +612,314 @@ test('an arrangement longer than two hours is rejected without replacing valid c
   assert.match(h.status(), /shorter than two hours/);
   assert.equal(h.get('score-name').textContent, 'valid');
   assert.equal(h.get('play').disabled, false);
+});
+
+const DB_NAME = 'medici-listening-room';
+const STORE_NAME = 'local';
+const savedArrangement = (name = 'Saved arrangement.mid', bytes = fixture()) => ({ version: 1, name, bytes });
+const savedPreferences = overrides => ({
+  version: 1, instrument: 'cello', speed: 1.25, transpose: -2, volume: 45, loop: true, ...overrides,
+});
+const storageValue = (storage, key) => storage.records().find(record =>
+  record.database === DB_NAME && record.store === STORE_NAME && record.key === key)?.value;
+function seededStorage(entries) {
+  return createStorage().seed(DB_NAME, STORE_NAME, Object.entries(entries));
+}
+const storageText = h => h.get('storage-status').textContent;
+
+test('import saves the original MIDI bytes in browser storage without transmitting them', async t => {
+  const h = await harness(t);
+  const bytes = fixture();
+  await h.upload('Keep this.mid', bytes);
+  await flush();
+  const saved = storageValue(h.storage, 'arrangement');
+  assert.ok(saved, 'A valid import should create a persisted arrangement');
+  assert.equal(saved.version, 1);
+  assert.equal(saved.name, 'Keep this.mid');
+  assert.deepEqual(new Uint8Array(saved.bytes), new Uint8Array(bytes));
+  assert.match(storageText(h), /saved|remembered|stored/i);
+  assert.equal(h.get('clear-midi').hidden, false);
+  assert.deepEqual(h.fetchCalls, ['instruments.json']);
+});
+
+test('reloading restores a saved MIDI at the beginning without autoplay or sample downloads', async t => {
+  const first = await harness(t);
+  await first.upload('Returning.mid');
+  first.click('play'); await flush();
+  first.advance(1250);
+  first.click('play');
+  const second = await harness(t, { storage: first.storage });
+  assert.equal(second.get('score-name').textContent, 'Returning');
+  assert.equal(second.get('play').disabled, false);
+  assert.equal(second.get('play-text').textContent, 'Play arrangement');
+  assert.equal(second.get('current-time').textContent, '0:00');
+  near(Number(second.get('seek').value), 0);
+  assert.equal(second.contexts.length, 0);
+  assert.equal(second.noteCalls.length, 0);
+  assert.equal(second.instrumentCalls.length, 0);
+  assert.equal(second.w.document.querySelector('iframe'), null);
+  assert.match(storageText(second), /restor|saved|browser/i);
+  assert.deepEqual(second.fetchCalls, ['instruments.json']);
+});
+
+test('saved instrument and playback preferences restore all visible controls without autoplay', async t => {
+  const storage = seededStorage({
+    arrangement: savedArrangement(),
+    preferences: savedPreferences(),
+  });
+  const h = await harness(t, { storage });
+  assert.equal(h.get('instrument-select').value, 'cello');
+  assert.equal(h.get('instrument-badge').textContent, 'CELLO');
+  assert.equal(h.w.document.querySelector('[data-instrument="cello"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(h.get('speed').value, '1.25');
+  assert.equal(h.get('speed-value').textContent, '1.25×');
+  assert.equal(h.get('transpose').value, '-2');
+  assert.equal(h.get('volume').value, '45');
+  assert.equal(h.get('volume-value').textContent, '45%');
+  assert.equal(h.get('loop').getAttribute('aria-pressed'), 'true');
+  assert.equal(h.contexts.length, 0);
+  assert.equal(h.instrumentCalls.length, 0);
+  assert.equal(h.get('play-text').textContent, 'Play arrangement');
+});
+
+test('changed preferences are persisted and survive the next visit', async t => {
+  const first = await harness(t);
+  await first.upload('Preferences.mid');
+  first.choose('violin');
+  first.change('speed', 0.75, 'input');
+  first.change('transpose', 7);
+  first.change('volume', 32, 'input');
+  first.click('loop');
+  first.advance(251);
+  await flush();
+  const second = await harness(t, { storage: first.storage });
+  assert.equal(second.get('instrument-select').value, 'violin');
+  assert.equal(second.get('speed').value, '0.75');
+  assert.equal(second.get('transpose').value, '7');
+  assert.equal(second.get('volume').value, '32');
+  assert.equal(second.get('loop').getAttribute('aria-pressed'), 'true');
+  assert.equal(second.instrumentCalls.length, 0);
+});
+
+test('invalid stored preferences cannot select an unknown instrument or unsafe control values', async t => {
+  const storage = seededStorage({ preferences: savedPreferences({
+    instrument: '../unknown-instrument', speed: -99, transpose: 9000, volume: 9000, loop: 'true',
+  }) });
+  const h = await harness(t, { storage });
+  assert.ok(catalog.includes(h.get('instrument-select').value));
+  assert.ok(Number(h.get('speed').value) >= 0.5 && Number(h.get('speed').value) <= 1.5);
+  assert.ok([...h.get('transpose').options].some(option => option.value === h.get('transpose').value));
+  assert.ok(Number(h.get('volume').value) >= 0 && Number(h.get('volume').value) <= 100);
+  assert.equal(h.get('loop').getAttribute('aria-pressed'), 'false');
+  assert.equal(h.contexts.length, 0);
+});
+
+test('unavailable IndexedDB does not prevent a fresh MIDI from playing', async t => {
+  const h = await harness(t, { noStorage: true });
+  await h.upload('Temporary.mid');
+  assert.equal(h.get('score-name').textContent, 'Temporary');
+  assert.equal(h.get('play').disabled, false);
+  assert.match(storageText(h), /unavailable|couldn.t|cannot|can.t|not saved/i);
+  h.click('play'); await flush();
+  assert.equal(h.get('play-text').textContent, 'Pause');
+  assert.ok(h.noteCalls.length > 0);
+});
+
+test('denied database opening is reported without breaking import or preview', async t => {
+  const storage = createStorage();
+  storage.failAlways('open', 'SecurityError');
+  const h = await harness(t, { storage });
+  await h.upload('Denied storage.mid');
+  assert.equal(h.get('play').disabled, false);
+  assert.equal(storageValue(storage, 'arrangement'), undefined);
+  assert.match(storageText(h), /unavailable|couldn.t|cannot|can.t|not saved/i);
+  h.click('preview'); await flush();
+  assert.equal(h.noteCalls.length, 7);
+});
+
+test('quota failure keeps the new score playable and warns the previous saved score remains', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Old saved.mid') });
+  const h = await harness(t, { storage });
+  storage.failNext('write', 'QuotaExceededError');
+  await h.upload('New temporary.mid');
+  assert.equal(h.get('score-name').textContent, 'New temporary');
+  assert.equal(h.get('play').disabled, false);
+  assert.equal(storageValue(storage, 'arrangement').name, 'Old saved.mid');
+  assert.match(storageText(h), /couldn.t|cannot|can.t|not saved/i);
+  assert.match(storageText(h), /previous|old|earlier/i);
+  h.click('play'); await flush();
+  assert.equal(h.get('play-text').textContent, 'Pause');
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('score-name').textContent, 'Old saved');
+});
+
+test('corrupt saved MIDI is rejected, can be removed, and does not autoplay', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Corrupt.mid', Uint8Array.from([1, 2, 3]).buffer) });
+  const h = await harness(t, { storage });
+  assert.equal(h.get('play').disabled, true);
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(h.contexts.length, 0);
+  assert.equal(h.get('clear-midi').hidden, false);
+  assert.match(storageText(h), /couldn.t|cannot|can.t|invalid|corrupt/i);
+  h.click('clear-midi'); await flush();
+  assert.equal(storageValue(storage, 'arrangement'), undefined);
+  await h.upload('Recovered.mid');
+  assert.equal(h.get('score-name').textContent, 'Recovered');
+  assert.equal(h.get('play').disabled, false);
+});
+
+test('clear stops playback, removes only the saved MIDI, and prevents later restore', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement(), preferences: savedPreferences() });
+  const h = await harness(t, { storage });
+  h.click('play'); await flush();
+  assert.ok(h.noteCalls.length > 0);
+  h.click('clear-midi'); await flush();
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(h.get('play').disabled, true);
+  assert.equal(h.get('track').disabled, true);
+  assert.equal(h.get('clear-midi').hidden, true);
+  assert.equal(storageValue(storage, 'arrangement'), undefined);
+  assert.equal(storageValue(storage, 'preferences').instrument, 'cello');
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(nextVisit.get('instrument-select').value, 'cello');
+  assert.equal(nextVisit.noteCalls.length, 0);
+});
+
+test('failed deletion is explicit and can be retried instead of falsely claiming removal', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement() });
+  const h = await harness(t, { storage });
+  storage.failNext('delete', 'UnknownError');
+  h.click('clear-midi'); await flush();
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(h.get('play').disabled, true);
+  assert.ok(storageValue(storage, 'arrangement'));
+  assert.equal(h.get('clear-midi').hidden, false);
+  assert.match(storageText(h), /couldn.t|cannot|can.t|failed|not removed/i);
+  h.click('clear-midi'); await flush();
+  assert.equal(storageValue(storage, 'arrangement'), undefined);
+  assert.equal(h.get('clear-midi').hidden, true);
+});
+
+test('a new import wins over a delayed startup restore and is the file saved for next visit', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Old restore.mid') });
+  const pending = storage.holdNext('read');
+  const h = await harness(t, { storage });
+  await pending.reached;
+  await h.upload('New import.mid');
+  assert.equal(h.get('score-name').textContent, 'New import');
+  pending.release(); await flush();
+  assert.equal(h.get('score-name').textContent, 'New import');
+  assert.equal(storageValue(storage, 'arrangement').name, 'New import.mid');
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('score-name').textContent, 'New import');
+});
+
+test('user preference changes win over delayed preference restore', async t => {
+  const storage = seededStorage({ preferences: savedPreferences() });
+  const pending = storage.holdNext('read');
+  const h = await harness(t, { storage });
+  await pending.reached;
+  h.choose('violin');
+  h.change('speed', 0.75, 'input');
+  h.change('volume', 20, 'input');
+  h.advance(251);
+  pending.release(); await flush();
+  assert.equal(h.get('instrument-select').value, 'violin');
+  assert.equal(h.get('speed').value, '0.75');
+  assert.equal(h.get('volume').value, '20');
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('instrument-select').value, 'violin');
+  assert.equal(nextVisit.get('speed').value, '0.75');
+  assert.equal(nextVisit.get('volume').value, '20');
+});
+
+test('clear during a pending save cannot resurrect that MIDI after the save finishes', async t => {
+  const h = await harness(t);
+  const pending = h.storage.holdNext('write');
+  await h.upload('Pending save.mid');
+  await pending.reached;
+  assert.equal(h.get('clear-midi').hidden, false);
+  h.click('clear-midi');
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  pending.release(); await flush();
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(storageValue(h.storage, 'arrangement'), undefined);
+  assert.equal(h.get('clear-midi').hidden, true);
+  const nextVisit = await harness(t, { storage: h.storage });
+  assert.equal(nextVisit.get('play').disabled, true);
+});
+
+test('import during pending clear remains visible and is saved after deletion', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Old before clear.mid') });
+  const h = await harness(t, { storage });
+  const pending = storage.holdNext('delete');
+  h.click('clear-midi'); await flush();
+  await pending.reached;
+  await h.upload('New after clear.mid');
+  assert.equal(h.get('score-name').textContent, 'New after clear');
+  pending.release(); await flush();
+  assert.equal(h.get('score-name').textContent, 'New after clear');
+  assert.equal(h.get('play').disabled, false);
+  assert.equal(h.get('clear-midi').hidden, false);
+  assert.equal(storageValue(storage, 'arrangement').name, 'New after clear.mid');
+  assert.match(storageText(h), /saved|remembered|stored/i);
+});
+
+test('the newest import remains saved when an earlier import write is delayed', async t => {
+  const h = await harness(t);
+  const pending = h.storage.holdNext('write');
+  await h.upload('Earlier.mid');
+  await pending.reached;
+  await h.upload('Newest.mid');
+  pending.release(); await flush();
+  assert.equal(h.get('score-name').textContent, 'Newest');
+  assert.equal(storageValue(h.storage, 'arrangement').name, 'Newest.mid');
+});
+
+test('a blocked database open times out while the imported MIDI stays usable', async t => {
+  const storage = createStorage();
+  const pending = storage.holdNext('open');
+  const h = await harness(t, { storage });
+  await pending.reached;
+  await h.upload('Offline storage.mid');
+  h.advance(8001); await flush();
+  assert.equal(h.get('play').disabled, false);
+  assert.match(storageText(h), /couldn.t|cannot|can.t|unavailable|timed? out|not saved/i);
+  h.click('play'); await flush();
+  assert.equal(h.get('play-text').textContent, 'Pause');
+  pending.release(); await flush();
+});
+
+test('pagehide flushes pending preference changes before the debounce elapses', async t => {
+  const first = await harness(t);
+  first.choose('violin');
+  first.change('volume', 28, 'input');
+  assert.equal(storageValue(first.storage, 'preferences'), undefined);
+  first.w.dispatchEvent(new first.w.Event('pagehide'));
+  await flush();
+  assert.equal(storageValue(first.storage, 'preferences').instrument, 'violin');
+  assert.equal(storageValue(first.storage, 'preferences').volume, 28);
+  const nextVisit = await harness(t, { storage: first.storage });
+  assert.equal(nextVisit.get('instrument-select').value, 'violin');
+  assert.equal(nextVisit.get('volume').value, '28');
+  assert.equal(nextVisit.contexts.length, 0);
+});
+
+test('timed-out save is aborted and cannot replace the old saved MIDI later', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Preserved.mid') });
+  const h = await harness(t, { storage });
+  const pending = storage.holdNext('write');
+  await h.upload('Timed out.mid');
+  await pending.reached;
+  h.advance(8001); await flush();
+  assert.equal(h.get('score-name').textContent, 'Timed out');
+  assert.equal(h.get('play').disabled, false);
+  assert.match(storageText(h), /couldn.t|cannot|can.t|not saved/i);
+  assert.equal(storageValue(storage, 'arrangement').name, 'Preserved.mid');
+  pending.release(); await flush();
+  assert.equal(storageValue(storage, 'arrangement').name, 'Preserved.mid');
+  await h.upload('Retry succeeded.mid');
+  assert.equal(storageValue(storage, 'arrangement').name, 'Retry succeeded.mid');
 });
