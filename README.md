@@ -1,1 +1,56 @@
-# medici
+# Medici · The listening room
+
+A polished, responsive, static web app for **Love For Duty** by Paolo Buonvino, from the *I Medici* soundtrack.
+
+## What works
+
+- Official recording through the visible YouTube player, with a direct YouTube fallback.
+- A separate instrument studio with 128 General MIDI sampled instruments, including guitar, violin, piano, cello, harp, and flute.
+- Local `.mid`/`.midi` import, melodic-part selection, playback/pause, seek, restart, loop, speed, volume, and transposition.
+- Instrument preview plays a short C-major arpeggio, clearly labelled as a preview rather than the song.
+- Imported files are processed only in the browser. They are not uploaded or stored on a server.
+
+## Important distinction
+
+**The app does not convert the official audio recording into another instrument.** A MIDI arrangement is required to replay the song's notes on different instruments. No exact-song MIDI arrangement is bundled because a redistributable arrangement was not available. Import your own arrangement, or one you have permission to use. Drum tracks are excluded. Pitch-bend, sustain-pedal automation, and performance articulations are not currently reproduced.
+
+The soundtrack is streamed by YouTube, not copied into this repository. The player requires an internet connection and remains subject to YouTube availability, regional restrictions, and ads.
+
+## Free GitHub Pages deployment
+
+1. Open the repository's **Settings → Pages**.
+2. Choose **Deploy from a branch**.
+3. Select **main** and **/(root)**, then Save.
+4. Wait for GitHub's Pages build to finish.
+
+Expected project URL: `https://eduard20.github.io/medici/`. Verify the build and URL after enabling Pages. No paid hosting, backend, secrets, or API keys are needed.
+
+## Run locally
+
+```sh
+python3 -m http.server 8080
+```
+
+Open `http://localhost:8080/`. Use HTTP rather than opening the HTML file directly because the instrument catalog is fetched locally.
+
+## Tests
+
+```sh
+npm install
+npm test
+```
+
+The DOM suite uses mocked Web Audio and instrument loading to verify app behavior, including asynchronous race conditions. It does not verify actual audio output or pixel layout. The standalone MIDI parser suite can also run without npm install: `node --test tests/midi.test.cjs`.
+
+An optional browser smoke test is in `tests/browser-smoke.cjs`. Run `npx playwright install chromium` and `npm run test:browser`, or set `CHROMIUM_PATH` to an existing Chromium binary. It requires Playwright plus Chromium and exercises local MIDI import, real sample loading, player controls, desktop/mobile layouts, and the official embed. Browser tests need outbound access for fonts and samples. 
+
+## Third-party sources and licenses
+
+- Official recording: [Love For Duty — Paolo Buonvino](https://www.youtube.com/watch?v=Y3zOQWJReJU), provided to YouTube by Universal Music Group. All music rights remain with the respective owners.
+- MIDI parsing: [@tonejs/midi](https://github.com/Tonejs/Midi), version 2.0.28, MIT; license in `vendor/midi-LICENSE`.
+- Sample playback: [soundfont-player](https://github.com/danigb/soundfont-player), version 0.12.0, MIT; license in `vendor/soundfont-player-LICENSE`.
+- Samples: FluidR3_GM by Frank Wen and contributors, hosted by [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Samples are loaded on demand from `gleitz.github.io`; they are not vendored here. They are not covered by the code libraries' MIT licenses.
+- Fonts: DM Sans and Playfair Display, loaded from Google Fonts under their open font licenses. The UI falls back to system fonts when unavailable.
+- Florence illustration: original SVG illustration created for this app.
+
+This independent fan project is not affiliated with Netflix, Lux Vide, or Paolo Buonvino.

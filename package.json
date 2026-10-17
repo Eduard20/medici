@@ -1,0 +1,15 @@
+{
+  "name": "medici-listening-room",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A static listening room and local MIDI instrument studio.",
+  "scripts": {
+    "test": "node --check app.js && node --test tests/*.test.cjs",
+    "test:browser": "node tests/browser-smoke.cjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "playwright": "1.62.1"
+  }
+}
