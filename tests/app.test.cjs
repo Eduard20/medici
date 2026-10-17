@@ -149,6 +149,7 @@ async function harness(t, options = {}) {
   };
   w.addEventListener('error', event => { errors.push(event.error || event.message); event.preventDefault(); });
   w.eval(midiSource + '\n//# sourceURL=vendor/midi.js');
+  w.eval(fs.readFileSync(path.join(root, 'catalogue.js'), 'utf8'));
   w.eval(appSource + '\n//# sourceURL=app.js');
   const get = id => w.document.getElementById(id);
   const change = (id, value, type = 'change') => {
@@ -1671,4 +1672,36 @@ test('session-only music can be removed even when IndexedDB is unavailable', asy
   assertView(h, 'library');
   assert.deepEqual(libraryTitles(h), []);
   assert.equal(h.get('play').disabled, true);
+});
+
+
+test('catalogue attribution survives save, reload and MIDI export without changing notes', async t => {
+  const storage = createStorage();
+  const h = await harness(t, {storage});
+  const source = {provider:'Wikimedia Commons',title:'Bach score',creator:'<b>Composer</b>',credit:'Historical edition',license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',sourceUrl:'https://commons.wikimedia.org/wiki/File:Bach.pdf',pdfUrl:'https://upload.wikimedia.org/wikipedia/commons/a/ab/Bach.pdf'};
+  const detail = {name:'Bach.mid',bytes:h.w.Uint8Array.from(new Uint8Array(fixture())).buffer,source};
+  h.w.dispatchEvent(new h.w.CustomEvent('medici:score-ready',{detail})); await flush();
+  assert.equal(h.get('score-source').hidden,false);
+  assert.match(h.get('score-source').textContent,/Composer/);
+  assert.equal(h.get('score-source').querySelector('b'),null);
+  const saved = storageValue(storage, 'pdf-arrangement');
+  assert.equal(saved.source.creator,'Composer');
+  assert.equal(saved.source.license,'CC BY-SA 4.0');
+  const midi = new Midi(new Uint8Array(saved.bytes));
+  assert.match(midi.header.meta[0].text,/Source page: https:\/\/commons.wikimedia.org/);
+  assert.match(midi.header.meta[0].text,/experimental optical music recognition/);
+  assert.equal(midi.tracks.reduce((n,track)=>n+track.notes.length,0),5);
+  const restored = await harness(t,{storage});
+  assert.equal(restored.get('studio').dataset.view,'library');
+  restored.w.document.querySelector('.saved-piece-open').click();
+  assert.match(restored.get('score-source').textContent,/CC BY-SA 4.0/);
+  await restored.acceptScore('Local upload.mid');
+  assert.equal(restored.get('score-source').hidden,true,'Local uploads never inherit the previous catalogue attribution');
+});
+
+test('invalid stored source URLs are dropped rather than rendered as links', async t => {
+  const h = await harness(t);
+  h.w.dispatchEvent(new h.w.CustomEvent('medici:score-ready',{detail:{name:'Unsafe source.mid',bytes:h.w.Uint8Array.from(new Uint8Array(fixture())).buffer,source:{provider:'Wikimedia Commons',license:'Public domain',licenseUrl:'javascript:alert(1)',sourceUrl:'https://evil.test/File:score.pdf',pdfUrl:'https://upload.wikimedia.org/wikipedia/commons/a/ab/score.pdf'}}}));
+  await flush();
+  assert.equal(h.get('score-source').hidden,true);
 });

@@ -44,3 +44,14 @@ test('repeated upload after success starts a fresh job and choosing another scor
 
 test('cancel while PDF cleanup is pending suppresses a finished recognition result',async()=>{const t=setup({holdDestroy:true});t.select();await tick();assert.equal(t.events.length,0);t.w.dispatchEvent(new t.w.Event('medici:cancel-pdf'));t.releaseDestroy();await tick();assert.equal(t.events.length,0);assert.match(t.d.getElementById('sheet-status').textContent,/another score/);assert.equal(t.d.getElementById('sheet-download').hidden,true);t.select();await tick();assert.equal(t.events.length,1);t.close();});
 test('synchronous worker message errors are cleaned up and allow retry',async()=>{const t=setup({throwPostMessage:true});t.select();await tick();assert.equal(t.events.length,0);assert.equal(t.workers[0].terminated,true);assert.match(t.d.getElementById('sheet-status').textContent,/Worker message failed/);assert.equal(t.d.getElementById('sheet-retry').hidden,false);t.close();});
+
+test('catalogue import enters the same converter and preserves source through retry only',async()=>{
+ const t=setup();
+ const source={provider:'Wikimedia Commons',title:'Imported score',license:'Public domain'};
+ t.w.MediciCatalogue={sanitizeSource:value=>value?.provider==='Wikimedia Commons'?value:null};
+ const file={name:'Imported score.pdf',size:100,slice:()=>({arrayBuffer:async()=>new TextEncoder().encode('%PDF-1.7').buffer}),arrayBuffer:async()=>new t.w.ArrayBuffer(8)};
+ t.w.dispatchEvent(new t.w.CustomEvent('medici:import-pdf',{detail:{file,source}}));
+ await tick();assert.equal(t.events.length,1);assert.equal(t.events[0].source,source);assert.equal(t.started(),1);assert.equal(t.d.getElementById('sheet-retry').hidden,false);
+ t.d.getElementById('sheet-retry').click();await tick();assert.equal(t.events.length,2);assert.equal(t.events[1].source,source);
+ t.select();await tick();assert.equal(t.events.length,3);assert.equal(t.events[2].source,null);t.close();
+});

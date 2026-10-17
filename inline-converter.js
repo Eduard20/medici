@@ -5,7 +5,7 @@
   if (!$('inline-pdf')) return;
   const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/build/';
   const supported = typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function' && !!window.Worker && !!window.crypto?.subtle;
-  let libPromise, current = null, output = null, sourceName = '', selectedFile = null;
+  let libPromise, current = null, output = null, sourceName = '', selectedFile = null, selectedSource = null;
   const say = (message, error = false) => { $('sheet-status').textContent = message; $('sheet-status').classList.toggle('error', error); };
   const check = job => { if (job.cancelled || current !== job) throw new Error('Cancelled'); };
   function busy(value) {
@@ -63,9 +63,9 @@
       try {job.worker.postMessage(payload,payload.image ? [payload.image] : []);} catch(error) {finish(error);}
     });
   }
-  async function convert(file) {
+  async function convert(file, source = null) {
     if (!supported || current || !file) return;
-    selectedFile = file; clearResult();
+    selectedFile = file; selectedSource = source; clearResult();
     if (file.size > 15*1024*1024) {busy(false);say('Choose a PDF under 15 MB. Export a smaller selection of pages first.',true);return;}
     const first = Number($('sheet-first').value), choice = $('sheet-count').value, requested = Number(choice), tempo = Number($('sheet-tempo').value);
     if (!Number.isInteger(first) || first<1 || first>500 || (choice!=='auto' && (!Number.isInteger(requested)||requested<1||requested>3)) || !Number.isInteger(tempo)||tempo<30||tempo>240) {
@@ -126,7 +126,10 @@
       say(`${result.summary.notes} notes are ready. Choose an instrument and press Play below.`);
       // The studio owns parsing, persistence and transport; this UI never autoplays or navigates.
       const midiBytes = result.bytes.buffer.slice(result.bytes.byteOffset,result.bytes.byteOffset+result.bytes.byteLength);
-      window.dispatchEvent(new CustomEvent('medici:score-ready',{detail:{bytes:midiBytes,name:sourceName+' · experimental.mid',summary:result.summary}}));
+      const detail = {bytes:midiBytes,name:sourceName+' · experimental.mid',summary:result.summary,source};
+      window.dispatchEvent(new CustomEvent('medici:score-ready',{detail}));
+      // The player adds source attribution to MIDI metadata before saving.
+      if (detail.bytes instanceof ArrayBuffer) output.bytes = new Uint8Array(detail.bytes);
     }
   }
   $('sheet-pdf').addEventListener('change',() => {
@@ -135,7 +138,10 @@
     $('sheet-pdf').value = '';
     if (file) convert(file);
   });
-  $('sheet-retry').addEventListener('click',() => convert(selectedFile));
+  $('sheet-retry').addEventListener('click',() => convert(selectedFile,selectedSource));
+  window.addEventListener('medici:import-pdf',event => {
+    if (event.detail?.file) convert(event.detail.file,window.MediciCatalogue?.sanitizeSource(event.detail.source));
+  });
   $('sheet-cancel').addEventListener('click',() => cancel());
   window.addEventListener('medici:cancel-pdf',() => {
     if (current) cancel('Conversion cancelled because you chose another score.');

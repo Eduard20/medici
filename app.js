@@ -35,7 +35,7 @@
     }
     $('conversion-title').hidden = next !== 'converting';
     // Upload options stay out of the keyboard order while only progress is shown.
-    document.querySelectorAll('.sheet-upload, .sheet-options').forEach(element => element.toggleAttribute('inert', next === 'converting'));
+    document.querySelectorAll('.sheet-upload, .sheet-options, .catalogue').forEach(element => element.toggleAttribute('inert', next === 'converting'));
     if (focus) {
       const target = $(next === 'score' ? 'choose-sound-title' : next === 'converting' ? 'conversion-title' : 'upload-title');
       target.focus({preventScroll: true});
@@ -65,7 +65,7 @@
     if (!saved) return [];
     const entries = [{...saved, id: saved.id || 'legacy-pdf-score'}, ...(Array.isArray(saved.entries) ? saved.entries : [])];
     const ids = new Set();
-    return entries.map(entry => ({version: entry.version, id: entry.id || entryId(), name: entry.name, bytes: entry.bytes, savedAt: entry.savedAt, warning: entry.warning})).filter(entry => {
+    return entries.map(entry => ({version: entry.version, id: entry.id || entryId(), name: entry.name, bytes: entry.bytes, savedAt: entry.savedAt, warning: entry.warning, source: window.MediciCatalogue?.sanitizeSource(entry.source) || null})).filter(entry => {
       if (ids.has(entry.id)) return false;
       ids.add(entry.id); return true;
     });
@@ -488,14 +488,35 @@
     $('score-name').textContent = scoreTitle(name);
     $('active-score-title').textContent = scoreTitle(name);
     $('clear-midi').hidden = false;
+    renderSource(currentEntry?.source);
     loadPart();
+  }
+  function renderSource(source) {
+    const container = $('score-source');
+    if (!container) return;
+    container.replaceChildren(); container.hidden = !source;
+    if (!source) return;
+    const credit = document.createElement('p'); credit.textContent = [source.creator,source.credit].filter(Boolean).join(' · ') || source.title;
+    const links = document.createElement('div'); links.className = 'score-source-links';
+    for (const [text,url] of [['Wikimedia source ↗',source.sourceUrl],[source.license+' ↗',source.licenseUrl],['Original PDF ↗',source.pdfUrl]]) {
+      const link = document.createElement('a'); link.textContent = text; link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; links.append(link);
+    }
+    const note = document.createElement('p'); note.textContent = 'Source attribution is saved with this piece and included in exported MIDI metadata. Check source terms and local rights before sharing.';
+    container.append(credit,links,note);
   }
   async function receiveScore(detail) {
     const token = ++importToken;
     try {
       if (!detail || typeof detail.name !== 'string' || !/\.midi?$/i.test(detail.name)) throw new Error('The recognized score has an invalid name.');
+      const source = window.MediciCatalogue?.sanitizeSource(detail.source) || null;
       const midi = parseScore(detail.bytes);
-      const entry = {version: 1, id: entryId(), name: detail.name, bytes: detail.bytes, savedAt: Date.now(),
+      // Retain source/edition attribution even when the derived MIDI leaves the app.
+      const attribution = source && window.MediciCatalogue.attribution(source);
+      if (attribution && !midi.header.meta.some(item => item.text === attribution)) midi.header.meta.push({type:'text',ticks:0,text:attribution});
+      const encoded = source ? midi.toArray() : null;
+      const bytes = encoded ? encoded.buffer.slice(encoded.byteOffset,encoded.byteOffset+encoded.byteLength) : detail.bytes;
+      detail.bytes = bytes;
+      const entry = {version: 1, id: entryId(), name: detail.name, bytes, source, savedAt: Date.now(),
         warning: $('sheet-warnings').hidden ? 'Experimental recognition. Check the notes and timing against your sheet music.' : $('sheet-warnings').textContent};
       currentEntry = entry; sessionEntries.set(entry.id, entry);
       showScore(midi, detail.name);

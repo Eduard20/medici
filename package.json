@@ -4,7 +4,7 @@
   "private": true,
   "description": "Private browser-based PDF sheet music recognition and a searchable 128-instrument player.",
   "scripts": {
-    "test": "node --check app.js && node --check inline-converter.js && node --check omr-worker.js && node --check musicxml-midi.js && node --test tests/*.test.cjs",
+    "test": "node --check catalogue.js && node --check app.js && node --check inline-converter.js && node --check omr-worker.js && node --check musicxml-midi.js && node --test tests/*.test.cjs",
     "test:browser": "node tests/browser-smoke.cjs",
     "serve": "python3 -m http.server 8080"
   },

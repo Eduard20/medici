@@ -4,7 +4,7 @@ A progressive, single-page, private **PDF sheet music → instrument playback** 
 
 ## Use it
 
-1. Start with **Upload sheet music** and your **Saved music** library. Choose a printed sheet-music PDF; only recognition progress and cancellation are shown while it is read.
+1. Start with **Upload sheet music**, **Find a free score**, and your **Saved music** library. Upload a printed sheet-music PDF, or search Wikimedia Commons by piece/composer and choose **Use this score**; only recognition progress and cancellation are shown while it is read.
 2. When conversion finishes, or when you open a saved piece, the instrument picker and player appear. Find a sound in the searchable 128-instrument library. Eight suggested sounds are shown first; family filters expose the full catalog without a long dropdown.
 3. Press **Play score**. The recognized notes are ready automatically, with no MIDI import, download, or second page required.
 
@@ -20,6 +20,14 @@ There is no YouTube player, built-in song, MIDI upload, account, paid backend, o
 - Requires WebAssembly, web workers, and Web Crypto over HTTPS. The recognition bridge uses ordinary async/await, so WebAssembly JSPI is no longer required. Browsers without JSPI use ONNX’s plain WASM runtime instead of its WebGPU/Asyncify bundle. Actual iPhone/iPad hardware and low-memory phones still need verification; availability of the APIs is not a full compatibility guarantee.
 - Single-threaded WASM is used when cross-origin isolation is absent. No service worker changes site security headers.
 
+## Free-score catalogue
+
+- Wikimedia Commons provides a modest, uneven collection, mostly historical/classical. Search results are limited to 20 PDF candidates under 15 MB from the sheet-music category tree. Shorter, more specific composer/title queries work best; modern songs may be absent.
+- Search shows edition filenames, available creator credit, page count, size and the source’s listed licence. Before importing, the app checks the selected edition’s actual categories again: these can reveal a modern CC arrangement even when the API’s headline label describes a public-domain composition. Public-domain, CC0 and standard CC BY/BY-SA editions are supported. Unfamiliar regional terms, ambiguous multiple CC licences, missing required credit, or incomplete category metadata require source-page review instead of automatic import. Metadata can still be wrong; users must check the source and local copyright law before reuse.
+- Downloads use only validated HTTPS Wikimedia PDF URLs, omit credentials/referrers, reject redirects, enforce a streamed 15 MB limit, and check the PDF header before using the same local converter. Selecting a score reads up to three pages with the existing page/tempo options. Search/download cancellation, stale responses, unavailable search, missing results, unsupported files and browser limits have visible recovery paths.
+- Creator/credit, source page, PDF URL and licence are stored with the recognized piece and shown in its player. MIDI exports include this source attribution as a MIDI text metadata event and identify experimental transcription as a modification. Keep required attribution and follow ShareAlike where applicable; this feature does not grant rights or verify worldwide public-domain status.
+- API documentation: https://www.mediawiki.org/wiki/API:Search and https://www.mediawiki.org/wiki/API:Imageinfo . Source licensing guidance: https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia .
+
 ## Instrument player
 
 - Search all instruments by name, friendly alias, or family; category buttons, clear-search and empty-state reset work with keyboard controls.
@@ -31,7 +39,7 @@ There is no YouTube player, built-in song, MIDI upload, account, paid backend, o
 
 ## Privacy and persistence
 
-PDF pages and recognized notes never leave the browser. Runtime/model/sample/font hosts receive ordinary request metadata, but no score data. Sources: versioned jsDelivr packages, official Partsong model hosting, gleitz.github.io samples, and Google Fonts.
+Uploaded PDF pages and recognized notes never leave the browser. Free-score searches send the entered keywords to Wikimedia Commons only on an explicit search; selecting a score fetches its source metadata and PDF directly from Wikimedia. No API key, account, proxy, or backend is used. Runtime/model/sample/font hosts receive ordinary request metadata, but no score data. Sources: versioned jsDelivr packages, official Partsong model hosting, gleitz.github.io samples, and Google Fonts.
 
 Multiple converted pieces are saved atomically as `pdf-arrangement` in the existing IndexedDB database (latest piece plus earlier entries). The previous single saved PDF is preserved automatically. Legacy song/manual-import records are deliberately not restored. Instrument, speed, transpose, volume, and loop preferences remain local. Reload opens the upload/library view without autoplay; choose a saved piece to reveal its player. **Your music** returns to the library and stops audio. **Remove saved score** deletes only that piece and cancels active recognition. Cross-tab writes merge inside a transaction. A storage failure is reported; unsaved pieces remain playable for the current visit.
 
