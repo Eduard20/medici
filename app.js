@@ -1,4 +1,4 @@
-/* Medici listening room. No imported MIDI content is transmitted. */
+/* Sheet Music Studio. PDF pages and recognized notes stay on this device. */
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
@@ -6,19 +6,100 @@
   const clock = seconds => `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.floor(Math.max(0, seconds) % 60)).padStart(2, '0')}`;
   const status = (message, error = false) => { $('status').textContent = message; $('status').classList.toggle('error', error); };
   const state = { context: null, gain: null, samples: new Map(), instrument: 'acoustic_grand_piano', score: null, notes: [], duration: 0, offset: 0, started: 0, playing: false, loading: false, speed: 1, transpose: 0, loop: false, next: 0, token: 0, active: new Set(), timer: null, previewTimer: null, previewing: false };
-  let youtube = null;
-  let youtubeLoad = false;
   let importToken = 0;
   let preferencesRevision = 0;
   let preferencesTimer = null;
   let databasePromise = null;
   let storageQueue = Promise.resolve();
   let knownInstruments = null;
-  let arrangementKind = 'imported';
-  const bundledScores = {
-    love: {url: 'assets/love-for-duty-piano.mid', name: 'Love for Duty · piano score', description: 'Paolo Buonvino · transcription from your piano score. Steady tempo, not the original recording.'},
-    demo: {url: 'assets/two-chord-demo.mid', name: 'Two-chord demo', description: 'C major → A minor · 4 seconds. From your code, not “Love For Duty”.'}
+  // An inline sound library: small starting palette, searchable full catalog.
+  const featuredInstruments = ['acoustic_grand_piano', 'acoustic_guitar_nylon', 'violin', 'cello', 'orchestral_harp', 'flute', 'choir_aahs', 'celesta'];
+  let soundFamily = 'featured';
+  const families = {
+    keys: 'Piano & keys', strings: 'Strings', guitars: 'Guitar & bass', winds: 'Winds & brass',
+    voices: 'Voices', synths: 'Synths', percussion: 'Percussion', effects: 'Sound effects'
   };
+  const familyMembers = {
+    keys: ['acoustic_grand_piano','bright_acoustic_piano','electric_grand_piano','honkytonk_piano','electric_piano_1','electric_piano_2','harpsichord','clavinet','celesta','drawbar_organ','percussive_organ','rock_organ','church_organ','reed_organ'],
+    strings: ['violin','viola','cello','contrabass','fiddle','tremolo_strings','pizzicato_strings','orchestral_harp','string_ensemble_1','string_ensemble_2'],
+    guitars: ['acoustic_guitar_nylon','acoustic_guitar_steel','electric_guitar_jazz','electric_guitar_clean','electric_guitar_muted','overdriven_guitar','distortion_guitar','guitar_harmonics','acoustic_bass','electric_bass_finger','electric_bass_pick','fretless_bass','slap_bass_1','slap_bass_2','banjo','sitar','shamisen','koto'],
+    winds: ['accordion','tango_accordion','harmonica','trumpet','trombone','tuba','muted_trumpet','french_horn','brass_section','soprano_sax','alto_sax','tenor_sax','baritone_sax','oboe','english_horn','bassoon','clarinet','piccolo','flute','recorder','pan_flute','blown_bottle','shakuhachi','whistle','ocarina','bagpipe','shanai'],
+    voices: ['choir_aahs','voice_oohs','synth_choir'],
+    percussion: ['glockenspiel','music_box','vibraphone','marimba','xylophone','tubular_bells','dulcimer','timpani','tinkle_bell','agogo','steel_drums','woodblock','taiko_drum','melodic_tom','synth_drum','reverse_cymbal','kalimba'],
+    effects: ['guitar_fret_noise','breath_noise','seashore','bird_tweet','telephone_ring','helicopter','applause','gunshot','orchestra_hit']
+  };
+  const soundNames = {
+    acoustic_grand_piano: 'Grand piano', acoustic_guitar_nylon: 'Nylon guitar', acoustic_guitar_steel: 'Steel-string guitar',
+    orchestral_harp: 'Harp', choir_aahs: 'Choir · aahs', voice_oohs: 'Voices · oohs', celesta: 'Celesta',
+    honkytonk_piano: 'Honky-tonk piano', electric_bass_finger: 'Fingered electric bass', electric_bass_pick: 'Picked electric bass'
+  };
+  const soundMoods = {acoustic_grand_piano: 'Timeless & intimate', acoustic_guitar_nylon: 'Warm & earthy', violin: 'Lyrical & tender', cello: 'Deep & soulful', orchestral_harp: 'Light & flowing', flute: 'Airy & graceful', choir_aahs: 'Soft & celestial', celesta: 'Delicate & dreamlike'};
+  const soundIcons = {
+    keys: '<rect x="4" y="5" width="24" height="22" rx="2"/><path d="M10 5v22M16 5v22M22 5v22M9 5v12h3V5M20 5v12h3V5"/>',
+    strings: '<path d="m21 3 7 2-1 7-7 7c3 3 1 7-2 9-5 3-14-6-11-11 2-3 6-5 9-2l7-7ZM9 25 24 7M15 21l-4-4M25 3l4 4"/>',
+    guitars: '<path d="m22 3 5 5-8 9c4 6-1 12-6 12S3 24 3 19s6-10 12-6ZM9 23l3-3M14 17l3-3M22 4l4 4"/><circle cx="13" cy="19" r="3"/>',
+    winds: '<path d="M7 27 27 7M4 24l4 4M24 4l4 4M11 22l-2-2M15 18l-2-2M19 14l-2-2M23 10l-2-2"/>',
+    voices: '<path d="M11 14V8a5 5 0 0 1 10 0v6a5 5 0 0 1-10 0ZM7 13a9 9 0 0 0 18 0M16 22v6M11 28h10"/>',
+    synths: '<path d="M3 16h4l3-9 5 20 5-22 4 11h5"/>',
+    percussion: '<ellipse cx="16" cy="12" rx="11" ry="5"/><path d="M5 12v12c3 6 19 6 22 0V12M9 16l4 12 6-12 5 10M10 3l9 5M24 2l-4 7"/>',
+    effects: '<path d="m16 3 3 9 10 4-10 3-3 10-3-10-10-3 10-4ZM26 3v5M24 5h5"/>'
+  };
+  const soundFamilyFor = name => Object.keys(familyMembers).find(family => familyMembers[family].includes(name)) || 'synths';
+  const soundName = name => soundNames[name] || label(name).replace(/\bfx\b/i, 'FX').replace(/_/g, ' ');
+  const iconMarkup = family => `<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${soundIcons[family]}</svg>`;
+  const searchText = text => text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[_·-]/g, ' ').replace(/\s+/g, ' ').trim();
+  function matchesSound(name, query) {
+    const family = soundFamilyFor(name);
+    const text = searchText(`${name} ${soundName(name)} ${families[family]} ${soundMoods[name] || ''} ${family === 'voices' ? 'choir voice' : ''} ${name.endsWith('_sax') ? 'saxophone' : ''}`);
+    return query.split(' ').every(word => text.includes(word)) || text.replaceAll(' ', '').includes(query.replaceAll(' ', ''));
+  }
+  function syncInstrumentUI() {
+    $('instrument-select').value = state.instrument;
+    $('instrument-badge').textContent = label(state.instrument).replace('Acoustic grand ', '').toUpperCase();
+    $('selected-instrument').textContent = soundName(state.instrument);
+    const family = soundFamilyFor(state.instrument);
+    $('selected-instrument-family').textContent = families[family];
+    $('selected-instrument-icon').innerHTML = iconMarkup(family);
+    document.querySelectorAll('[data-instrument]').forEach(button => {
+      const active = button.dataset.instrument === state.instrument;
+      button.classList.toggle('selected', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.querySelector('.sound-check').textContent = active ? '✓' : '+';
+    });
+  }
+  function renderInstruments() {
+    const query = searchText($('instrument-search').value);
+    const catalog = knownInstruments || featuredInstruments;
+    let names = query ? catalog.filter(name => matchesSound(name, query)) : soundFamily === 'featured' ? featuredInstruments.filter(name => catalog.includes(name)) : soundFamily === 'all' ? catalog : catalog.filter(name => soundFamilyFor(name) === soundFamily);
+    const grid = $('instrument-results');
+    grid.replaceChildren(...names.map(name => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'instrument'; button.dataset.instrument = name;
+      const icon = document.createElement('span'); icon.className = 'instrument-symbol'; icon.innerHTML = iconMarkup(soundFamilyFor(name));
+      const copy = document.createElement('span'); copy.className = 'sound-copy';
+      const title = document.createElement('strong'); title.textContent = soundName(name);
+      const subtitle = document.createElement('small'); subtitle.textContent = soundMoods[name] || families[soundFamilyFor(name)];
+      const check = document.createElement('span'); check.className = 'sound-check'; check.setAttribute('aria-hidden', 'true');
+      copy.append(title, subtitle); button.append(icon, copy, check);
+      button.addEventListener('click', () => selectInstrument(name));
+      return button;
+    }));
+    grid.hidden = names.length === 0;
+    $('instrument-empty').hidden = names.length !== 0;
+    $('clear-instrument-search').hidden = !$('instrument-search').value;
+    $('instrument-result-count').textContent = `${names.length} ${names.length === 1 ? 'sound' : 'sounds'}${query ? ' found across all instruments' : soundFamily === 'featured' ? ' chosen for this feeling' : soundFamily === 'all' ? ' to explore' : ' · ' + families[soundFamily]}`;
+    document.querySelectorAll('[data-family]').forEach(button => button.setAttribute('aria-pressed', String(!query && button.dataset.family === soundFamily)));
+    syncInstrumentUI();
+  }
+  $('instrument-search').addEventListener('input', renderInstruments);
+  $('instrument-search').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); $('instrument-search').value = ''; renderInstruments(); } });
+  $('clear-instrument-search').addEventListener('click', () => { $('instrument-search').value = ''; renderInstruments(); $('instrument-search').focus(); });
+  $('reset-instrument-search').addEventListener('click', () => { soundFamily = 'all'; $('instrument-search').value = ''; renderInstruments(); $('instrument-search').focus(); });
+  document.querySelectorAll('[data-family]').forEach(button => button.addEventListener('click', () => {
+    soundFamily = button.dataset.family; $('instrument-search').value = ''; renderInstruments();
+    $('instrument-results').scrollTop = 0;
+  }));
+  $('instrument-select').replaceChildren(...featuredInstruments.map(name => new Option(label(name), name)));
+  renderInstruments();
   const storageStatus = (message, error = false) => {
     $('storage-status').textContent = message;
     $('storage-status').classList.toggle('error', error);
@@ -99,12 +180,7 @@
       // The complete catalog may arrive later; keep the selected value visible meanwhile.
       if (![...$('instrument-select').options].some(option => option.value === saved.instrument))
         $('instrument-select').add(new Option(label(saved.instrument), saved.instrument));
-      $('instrument-select').value = saved.instrument;
-      $('instrument-badge').textContent = label(saved.instrument).replace('Acoustic grand ', '').toUpperCase();
-      document.querySelectorAll('[data-instrument]').forEach(button => {
-        const active = button.dataset.instrument === saved.instrument;
-        button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
-      });
+      syncInstrumentUI();
     }
     if (Number.isFinite(saved.speed) && saved.speed >= .5 && saved.speed <= 1.5) {
       state.speed = saved.speed; $('speed').value = saved.speed; $('speed-value').textContent = saved.speed.toFixed(2) + '×';
@@ -118,34 +194,6 @@
     }
     if (typeof saved.loop === 'boolean') { state.loop = saved.loop; $('loop').setAttribute('aria-pressed', String(saved.loop)); }
   }
-
-  function pauseOriginal() {
-    if (youtube && typeof youtube.pauseVideo === 'function') youtube.pauseVideo();
-  }
-  function loadOriginal() {
-    stop(false); stopPreview();
-    if (youtubeLoad) { youtube?.playVideo?.(); return; }
-    youtubeLoad = true;
-    $('video-placeholder').hidden = true;
-    $('youtube-player').hidden = false;
-    const frame = document.createElement('iframe');
-    frame.id = 'youtube-player'; frame.title = 'Love For Duty · Paolo Buonvino · official recording';
-    frame.src = `https://www.youtube-nocookie.com/embed/QVOhsRnkLZA?autoplay=1&enablejsapi=1&playsinline=1&origin=${encodeURIComponent(location.origin)}`;
-    frame.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
-    frame.allowFullscreen = true; frame.referrerPolicy = 'strict-origin-when-cross-origin';
-    $('youtube-player').replaceWith(frame);
-    window.onYouTubeIframeAPIReady = () => {
-      youtube = new YT.Player('youtube-player', {events: {
-        onStateChange(event) { if (event.data === 1) { stop(false); stopPreview(); } },
-        onError() { $('video-status').hidden = false; $('video-status').textContent = 'YouTube could not play this recording here. Use “Open on YouTube” beside the player.'; }
-      }});
-    };
-    const script = document.createElement('script'); script.src = 'https://www.youtube.com/iframe_api';
-    script.onerror = () => { $('video-status').hidden = false; $('video-status').textContent = 'If playback is unavailable here, use “Open on YouTube”.'; };
-    document.head.append(script);
-  }
-  $('load-video').addEventListener('click', loadOriginal);
-  $('listen-link').addEventListener('click', loadOriginal);
 
   function audio() {
     if (!state.context) {
@@ -181,7 +229,7 @@
   function position() { return state.playing ? Math.min(state.duration, state.offset + (state.context.currentTime - state.started) * state.speed) : state.offset; }
   function updateTransport() {
     const pos = position(); $('current-time').textContent = clock(pos); $('total-time').textContent = clock(state.duration);
-    $('seek').value = pos; $('play-text').textContent = state.loading ? 'Loading instrument…' : state.playing ? 'Pause' : 'Play arrangement';
+    $('seek').value = pos; $('play-text').textContent = state.loading ? 'Loading instrument…' : state.playing ? 'Pause' : 'Play score';
     $('play-icon').textContent = state.playing ? 'Ⅱ' : '▶';
     $('play').disabled = !state.notes.length || state.loading;
     $('restart').disabled = !$('seek').max || !state.notes.length;
@@ -214,13 +262,13 @@
     updateTransport();
     if (pos >= state.duration) {
       stop(true);
-      if (state.loop) play(); else status('Arrangement finished. Play again or try another instrument.');
+      if (state.loop) play(); else status('Score finished. Play again or try another instrument.');
     }
   }
   async function play() {
     if (!state.notes.length || state.loading) return;
     if (state.playing) { stop(false); status('Paused.'); return; }
-    stopPreview(); pauseOriginal();
+    stopPreview();
     const token = ++state.token; state.loading = true; updateTransport();
     status(`Loading ${label(state.instrument).toLowerCase()} samples…`);
     try {
@@ -231,7 +279,7 @@
       state.next = state.notes.findIndex(note => note.time + note.duration > state.offset);
       if (state.next < 0) state.next = state.notes.length;
       schedule(player); state.timer = setInterval(() => schedule(player), 30);
-      status(`Playing ${label(state.instrument).toLowerCase()} · ${arrangementKind === 'demo' ? 'two-chord demo, not Love For Duty' : arrangementKind === 'love' ? 'Love for Duty piano-score transcription' : 'imported MIDI arrangement'}.`);
+      status(`Playing your score with ${soundName(state.instrument).toLowerCase()}.`);
     } catch (err) {
       if (token !== state.token) return;
       stop(false); status(`Couldn’t load instrument samples. Check your internet connection and try again. ${String(err?.message || err).slice(0, 100)}`, true);
@@ -239,7 +287,7 @@
   }
   async function preview() {
     if (state.previewing) { stopPreview(); state.token++; status('Preview stopped.'); return; }
-    stop(false); pauseOriginal(); stopPreview();
+    stop(false); stopPreview();
     state.previewing = true; $('preview').textContent = '■ Stop preview';
     const token = ++state.token;
     status(`Loading ${label(state.instrument).toLowerCase()} samples…`);
@@ -247,8 +295,8 @@
       await audio(); const player = await instrument(state.instrument);
       if (token !== state.token || !state.previewing) return;
       [60, 64, 67, 72, 67, 64, 60].forEach((midi, i) => noteOn(player, {midi,velocity:.7}, state.context.currentTime + .05 + i * .3, .38));
-      status(`Previewing ${label(state.instrument).toLowerCase()}: a short C-major arpeggio, not “Love For Duty”.`);
-      state.previewTimer = setTimeout(() => { stopPreview(); status('Preview finished. Import a MIDI arrangement to play its notes.'); }, 2700);
+      status(`Previewing ${label(state.instrument).toLowerCase()}: a short C-major arpeggio, not your score.`);
+      state.previewTimer = setTimeout(() => { stopPreview(); status('Preview finished. Press Play to hear your score in this sound.'); }, 2700);
     } catch (err) {
       if (token !== state.token) return;
       stopPreview(); status('Couldn’t load instrument samples. Check your connection, then try Preview sound again.', true);
@@ -256,15 +304,11 @@
   }
   function selectInstrument(name) {
     const resume = state.playing || state.loading; stop(false); stopPreview(); state.instrument = name;
-    $('instrument-select').value = name; $('instrument-badge').textContent = label(name).replace('Acoustic grand ', '').toUpperCase();
-    document.querySelectorAll('[data-instrument]').forEach(button => {
-      const active = button.dataset.instrument === name; button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
-    });
-    status(`${label(name)} selected. ${state.notes.length ? 'Play your arrangement or preview this sound.' : 'Preview its sound, or load a MIDI arrangement.'}`);
+    syncInstrumentUI();
+    status(`${label(name)} selected. ${state.notes.length ? 'Play your score or preview this sound.' : 'Preview its sound, or upload sheet music.'}`);
     rememberPreferences();
     if (resume) play();
   }
-  document.querySelectorAll('[data-instrument]').forEach(button => button.addEventListener('click', () => selectInstrument(button.dataset.instrument)));
   $('instrument-select').addEventListener('change', event => selectInstrument(event.target.value));
   $('preview').addEventListener('click', preview); $('play').addEventListener('click', play);
   $('restart').addEventListener('click', () => { const resume = state.playing || state.loading; stop(true); stopPreview(); if (resume) play(); else status('Back at the beginning.'); });
@@ -305,117 +349,80 @@
     if (!Number.isFinite(duration) || duration <= 0 || duration > 7200) throw new Error('Use a valid MIDI arrangement shorter than two hours.');
     return midi;
   }
-  function showScore(midi, name, restored = false) {
-    arrangementKind = 'imported';
+  function showScore(midi, name) {
     state.score = midi;
     $('track').replaceChildren(new Option('All melodic parts', 'all'));
     midi.tracks.forEach((track, index) => { if (!track.instrument.percussion && track.notes.length) $('track').add(new Option(track.name || `Part ${index + 1} · ${track.instrument.name}`, String(index))); });
     $('track').disabled = false;
     $('score-name').textContent = name.replace(/\.midi?$/i, '');
-    $('file-title').textContent = name;
-    $('file-description').textContent = restored ? 'Restored from this browser. Ready whenever you are.' : 'Loaded locally. Choose another file any time.';
     $('clear-midi').hidden = false;
     loadPart();
   }
-  async function loadBundled(kind, expectedToken) {
-    const token = expectedToken === undefined ? ++importToken : expectedToken;
-    if (token !== importToken) return;
-    stop(false); stopPreview();
-    const score = bundledScores[kind];
-    status(`Loading ${score.name}…`);
-    try {
-      const response = await fetch(score.url);
-      if (!response.ok) throw new Error('Arrangement file unavailable.');
-      const bytes = await response.arrayBuffer();
-      if (token !== importToken) return;
-      const midi = parseScore(bytes);
-      showScore(midi, score.name);
-      arrangementKind = kind;
-      $('file-description').textContent = score.description;
-      $('clear-midi').hidden = true;
-      status(`${score.name} ready. Choose an instrument and press Play arrangement.`);
-      storageStatus('Included arrangement loaded without an upload. Your saved MIDI, if any, has not been replaced.');
-    } catch {
-      if (token !== importToken) return;
-      status(`Couldn’t load ${score.name}. Check your connection and try its Load button again.`, true);
-    }
-  }
-  $('load-demo').addEventListener('click', () => loadBundled('demo'));
-  $('load-love-duty').addEventListener('click', () => loadBundled('love'));
-  async function importFile(file) {
-    if (!file) return;
+  async function receiveScore(detail) {
     const token = ++importToken;
-    if (!/\.midi?$/i.test(file.name)) { status('Choose a .mid or .midi file. MP3 and other recordings cannot be imported.', true); return; }
-    if (file.size > 5 * 1024 * 1024) { status('This file is too large. Choose a MIDI file under 5 MB.', true); return; }
-    stop(false); stopPreview();
     try {
-      const bytes = await file.arrayBuffer();
-      if (token !== importToken) return;
-      const midi = parseScore(bytes);
-      showScore(midi, file.name);
-      status('MIDI ready. Choose an instrument and press Play arrangement. Drum tracks are excluded.');
-      storageStatus('Saving privately in this browser…');
+      if (!detail || typeof detail.name !== 'string' || !/\.midi?$/i.test(detail.name)) throw new Error('The recognized score has an invalid name.');
+      const midi = parseScore(detail.bytes);
+      showScore(midi, detail.name);
+      status('Your score is ready. Choose a sound and press Play. Check the notes: recognition can make mistakes.');
+      storageStatus('Saving your converted score privately in this browser…');
       try {
-        await saveStored('arrangement', {version: 1, name: file.name, bytes});
+        await saveStored('pdf-arrangement', {version: 1, name: detail.name, bytes: detail.bytes});
         if (token !== importToken) return;
-        $('file-description').textContent = 'Saved in this browser. It will be here next visit.';
-        storageStatus('Saved on this device, in this browser only. Nothing was uploaded.');
+        storageStatus('Score saved on this device, in this browser only. Nothing was uploaded.');
       } catch {
         if (token !== importToken) return;
-        storageStatus('Couldn’t save this MIDI. You can play it for this visit. A previously saved file may return on reload.', true);
+        storageStatus('Couldn’t save this score. You can play it for this visit. A previously saved score may return on reload.', true);
       }
-    } catch (error) { if (token !== importToken) return; status(`Couldn’t import this MIDI. ${String(error?.message || error).slice(0, 180)}`, true); }
+    } catch (error) {
+      if (token !== importToken) return;
+      status(`Couldn’t read the converted score. ${String(error?.message || error).slice(0, 180)}`, true);
+    }
   }
+  window.addEventListener('medici:score-ready', event => receiveScore(event.detail));
+  window.addEventListener('medici:pdf-started', () => { ++importToken; stop(false); stopPreview(); });
   async function restoreSaved() {
     const token = importToken, revision = preferencesRevision;
     const preferencesRead = stored('preferences').then(saved => {
       if (preferencesRevision === revision) restorePreferences(saved);
     }).catch(() => {});
     try {
-      const saved = await stored('arrangement');
+      const saved = await stored('pdf-arrangement');
       if (token !== importToken) return;
-      if (!saved) { await loadBundled('love', token); return; }
+      if (!saved) { storageStatus('Your converted score stays in this browser. Nothing is uploaded.'); return; }
       $('clear-midi').hidden = false;
       if (saved.version !== 1 || typeof saved.name !== 'string' || !/\.midi?$/i.test(saved.name)) throw new Error('Saved file is not a supported MIDI record.');
       const midi = parseScore(saved.bytes);
       if (token !== importToken) return;
-      showScore(midi, saved.name, true);
-      status('Your saved MIDI is ready. Choose an instrument and press Play arrangement.');
+      showScore(midi, saved.name);
+      status('Your saved score is ready. Choose a sound and press Play.');
       storageStatus('Restored from this browser. Nothing was uploaded.');
     } catch {
       if (token !== importToken) return;
-      storageStatus('Couldn’t restore saved MIDI. You can still import and play a file. If a saved file is damaged, remove it and import again.', true);
+      storageStatus('Couldn’t restore the saved score. You can upload its PDF again. If the saved score is damaged, remove it and try again.', true);
     }
     await preferencesRead;
   }
   $('clear-midi').addEventListener('click', async () => {
     const token = ++importToken;
+    window.dispatchEvent(new Event('medici:cancel-pdf'));
     stop(true); stopPreview();
     state.score = null; state.notes = []; state.duration = 0; state.offset = 0;
     $('track').replaceChildren(new Option('All melodic parts', 'all')); $('track').disabled = true;
-    $('score-name').textContent = 'No MIDI loaded'; $('score-meta').textContent = 'Choose a file to begin.';
-    $('file-title').textContent = 'Your arrangement starts here.';
-    $('file-description').textContent = 'Choose a MIDI file once. Keep it privately in this browser.';
+    $('score-name').textContent = 'Your music goes here'; $('score-meta').textContent = 'Upload sheet music to begin.';
     $('seek').max = '1'; updateTransport();
-    status('Arrangement removed from the player.'); storageStatus('Removing the saved MIDI…');
+    status('Score removed from the player.'); storageStatus('Removing the saved score…');
     $('clear-midi').disabled = true;
     try {
-      await saveStored('arrangement', undefined, true);
+      await saveStored('pdf-arrangement', undefined, true);
       if (token !== importToken) return;
       $('clear-midi').hidden = true;
-      storageStatus('Saved MIDI removed from this browser. Your original file is unchanged.');
+      storageStatus('Saved score removed from this browser. Your original PDF is unchanged.');
     } catch {
       if (token !== importToken) return;
-      storageStatus('Couldn’t remove the saved copy. Try Remove saved MIDI again, or clear this site’s browser storage.', true);
+      storageStatus('Couldn’t remove the saved copy. Try Remove saved score again, or clear this site’s browser storage.', true);
     } finally { $('clear-midi').disabled = false; }
   });
-  $('midi-file').addEventListener('change', event => { importFile(event.target.files[0]); event.target.value = ''; });
-  const drop = $('file-zone');
-  ['dragenter', 'dragover'].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.add('dragging'); }));
-  ['dragleave', 'drop'].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.remove('dragging'); }));
-  drop.addEventListener('drop', event => importFile(event.dataTransfer.files[0]));
-  document.addEventListener('dragover', event => event.preventDefault());
-  document.addEventListener('drop', event => event.preventDefault());
   window.addEventListener('pagehide', () => {
     stop(false); stopPreview();
     if (preferencesTimer !== null) { clearTimeout(preferencesTimer); preferencesTimer = null; saveStored('preferences', preferences()).catch(() => {}); }
@@ -425,6 +432,7 @@
     const select = $('instrument-select'); select.replaceChildren(...names.map(name => new Option(label(name), name)));
     if (!names.includes(state.instrument)) restorePreferences({version: 1, instrument: 'acoustic_grand_piano'});
     select.value = state.instrument;
+    renderInstruments();
   }).catch(() => status('The full instrument list could not load. Featured instruments are still available.', true));
   updateTransport();
   restoreSaved();

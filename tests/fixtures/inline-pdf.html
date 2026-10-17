@@ -1,0 +1,17 @@
+<section class="inline-pdf" id="inline-pdf" aria-labelledby="sheet-heading">
+  <p class="eyebrow">YOUR SHEET MUSIC</p>
+  <h3 id="sheet-heading">Upload your notes. Hear them.</h3>
+  <p class="inline-pdf-hint">Choose a printed sheet-music PDF. We’ll read the notes here, then you can pick an instrument and press Play.</p>
+  <p class="inline-pdf-disclosure" id="sheet-disclosure">Experimental · PDF stays on this device. First use downloads about 200–250 MB from jsDelivr and Partsong. Desktop Chrome/Edge recommended. Up to 15 MB and 3 pages per run.</p>
+  <label class="button primary sheet-upload" for="sheet-pdf"><input id="sheet-pdf" type="file" accept="application/pdf,.pdf" aria-describedby="sheet-disclosure"><span>Upload sheet-music PDF <span aria-hidden="true">↑</span></span></label>
+  <details class="sheet-options"><summary>Page & tempo options</summary><div class="sheet-fields">
+    <label>Starting page<input id="sheet-first" type="number" min="1" max="500" value="1"></label>
+    <label>Pages<select id="sheet-count"><option value="auto">Up to 3 pages</option><option value="1">1 page</option><option value="2">2 pages</option><option value="3">3 pages</option></select></label>
+    <label>Tempo (BPM)<input id="sheet-tempo" type="number" min="30" max="240" value="100"></label>
+  </div><p>Set these before uploading. Tempo changes printed in the score are not reproduced.</p></details>
+  <progress id="sheet-progress" max="100" hidden aria-label="Recognition progress"></progress>
+  <p id="sheet-status" role="status" aria-live="polite"></p>
+  <p id="sheet-warnings" class="sheet-warning" hidden></p>
+  <div class="sheet-actions"><button id="sheet-cancel" class="button secondary" hidden>Cancel conversion</button><button id="sheet-retry" class="text-link" hidden>Read this PDF again</button><button id="sheet-download" class="text-link" hidden>Download MIDI</button></div>
+  <details class="sheet-diagnostics"><summary>Recognition details & storage</summary><pre id="sheet-log" aria-label="Recognition log"></pre><button id="sheet-clear-cache" class="text-link">Clear downloaded recognition models</button><p>Only the model cache is cleared. Your saved music stays.</p></details>
+</section>
