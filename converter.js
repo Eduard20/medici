@@ -51,6 +51,8 @@
     });
   }
   function makeResult() {
+    const tempo = Number($('pdf-tempo').value);
+    if (!Number.isInteger(tempo) || tempo < 30 || tempo > 240) throw new Error('Choose a tempo from 30–240 BPM.');
     output = window.MediciMusicXML.parsePages(xmlPages, {tempo: Number($('pdf-tempo').value), title: sourceName});
     const s = output.summary;
     $('pdf-summary').textContent = `${s.notes} recognized notes · ${s.tracks} tracks · ${s.pages} page${s.pages === 1 ? '' : 's'} · ${Math.round(s.durationSeconds)} seconds at ${s.tempo} BPM`;
@@ -142,7 +144,7 @@
   $('pdf-start').addEventListener('click',convert);
   $('pdf-cancel').addEventListener('click',() => cancel());
   $('pdf-file').addEventListener('change',() => {clearResult(); say('PDF selected. Start with one page to check the result.');});
-  $('pdf-tempo').addEventListener('change',() => {if (xmlPages) {try {makeResult();} catch(error){say(error.message,true);}}});
+  $('pdf-tempo').addEventListener('change',() => {if (xmlPages) {try {makeResult();} catch(error){output = null; $('pdf-result').hidden = true; say(error.message,true);}}});
   $('pdf-download').addEventListener('click',() => {
     if (!output) return;
     const url = URL.createObjectURL(new Blob([output.bytes],{type:'audio/midi'}));

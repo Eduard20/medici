@@ -16,6 +16,20 @@ A polished, responsive, static web app for **Love For Duty** by Paolo Buonvino, 
 - **Remove saved MIDI** deletes the saved arrangement and clears the player. The original file is unchanged.
 - Storage failures do not prevent playback for the current visit, and the app does not claim a failed save succeeded.
 
+## Experimental PDF sheet music → MIDI
+
+Open `convert.html` to render selected PDF pages locally with PDF.js, recognize notes with homr/Partsong in a Pyodide + ONNX Web Worker, and export real MIDI. This is optical recognition, not a lookup of known songs and not an audio converter. Nothing in the implementation matches file names or content to a prewritten arrangement.
+
+- Up to 15 MB; 1–3 pages per run. One page is recommended for a first test. Choose a starting page and tempo (30–240 BPM).
+- Engine/model downloads happen only after pressing **Read the notes**. First use downloads roughly 200–250 MB; the 157 MB models are cached when storage permits. Cancellation terminates the worker; PDF pages and partial recognition results are discarded.
+- PDF images and notes never leave the browser. The app fetches versioned runtime packages from jsDelivr and pinned, hash-verified models from official `partsong.app` hosting. Those hosts receive ordinary request metadata such as IP addresses, but no score data.
+- **Download MIDI** creates a local file. **Use in instrument studio** deliberately replaces this browser's saved MIDI and opens the existing player. Bundled songs remain available. No autoplay is added.
+- Feature detection requires WebAssembly JSPI (`Suspending` and `promising`), workers, and Web Crypto. Tested in Chromium 154. Safari/iOS 27+ and Firefox 153+ expose JSPI, but full converter compatibility on those platforms and low-memory phones has not been verified. Unsupported browsers get a clear disabled state; the MIDI player remains usable.
+- Recognition can misread notes, accidentals, timing, staves, and key/time signatures. Repeats and expressive performance details are not fully reproduced. The output is a rough draft that must be checked, not a faithful-transcription guarantee. No transcription accuracy percentage is claimed for general scores.
+- The converter runs single-threaded WASM when cross-origin isolation is unavailable. There is no service worker changing the main app's YouTube/audio behavior, no paid backend, and no account or API key.
+
+See `NOTICE.md`, `LICENSE`, and the visible converter credits for all source and model licensing details, including the upstream model-training-data caveat for commercial use.
+
 ## Important distinction
 
 **The app does not convert the official audio recording into another instrument.** A MIDI arrangement is required to replay the song's notes on different instruments. The bundled piano-score transcription was created from the user-supplied sheet music and published at their request. It follows a steady tempo rather than recreating the original performance. You may also import your own arrangement. Drum tracks are excluded. Pitch-bend, sustain-pedal automation, and performance articulations are not currently reproduced.
