@@ -1,0 +1,386 @@
+Object.defineProperty(WebAssembly, "Suspending", {value:undefined});
+Object.defineProperty(WebAssembly, "promising", {value:undefined});
+self.postMessage({type:"capabilities",jspi:typeof WebAssembly.Suspending+"/"+typeof WebAssembly.promising});
+// Adapted for Medici (2026-10-17) from Partsong © 2026 Paul Fremantle. AGPL-3.0.
+// Changes: verified downloads, bounded retry/cleanup, and async Python bridge.
+// Module worker. Runs homr (Python, via Pyodide) with its ONNX models on onnxruntime-web.
+// Python awaits model calls normally, including on browsers without JSPI.
+
+const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
+const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
+const MODEL_CACHE = "medici-omr-models-v1";
+const MODEL_BASE = "https://partsong.app/models/";
+const MODEL_HASHES = {
+  ["segnet_308-3296ccd40960f90ca6ab9c035cca945675d30a0f.onnx"]: "6ed36640db4ef5d223098b6d5efe4eda97c66b24a2c72faab8a018c749003a8d",
+  ["encoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx"]: "92bd18338dc8da3c9b00185008ab14719ff9f912efe785ca42d7b623e06e0c6b",
+  ["decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx"]: "18801c1e3657bdea1b031db90b10d66e15accfc1d607780f09a9e059133e886a"
+};
+const volatileCache = new Map();
+let modelCache;
+async function cacheStore() {
+  if (!modelCache) {
+    try { modelCache = await caches.open(MODEL_CACHE); } catch {}
+    const persistent = modelCache;
+    modelCache = {
+      async match(key) { return volatileCache.get(key)?.clone() || await persistent?.match(key); },
+      async put(key, response) {
+        try { if (persistent) { await persistent.put(key, response.clone()); return; } } catch {}
+        volatileCache.set(key, response);
+      }
+    };
+  }
+  return modelCache;
+}
+const MODELS = [
+  "segnet_308-3296ccd40960f90ca6ab9c035cca945675d30a0f.onnx",
+  "encoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx",
+  "decoder_pytorch_model_465-597144cab54c8f6d0f6c9619df5c5312694eadd6.onnx",
+];
+// Uncompressed total, for progress: servers may gzip, so content-length
+// doesn't match the bytes received.
+const MODELS_TOTAL_BYTES = 157482318;
+// The decoder runs hundreds of tiny steps per staff, where WebGPU's per-call
+// overhead loses to WASM; the big convolutional models gain from the GPU.
+const GPU_MODELS = new Set([MODELS[0], MODELS[1]]);
+
+let ort;
+
+const post = (msg) => self.postMessage(msg);
+const sessions = [];
+const sessionNames = []; // id -> model name
+const onGpu = new Set(); // ids of sessions created on WebGPU
+const sessionIds = new Map();
+let useGpu = false;
+
+// Models download in 4 MB pieces (HTTP range requests), each stored as it
+// arrives, so a dropped or crawling connection resumes where it stopped (even
+// after the app is closed) instead of restarting a 57 MB file.
+const PIECE = 4 * 1024 * 1024;
+const STALL_MS = 30000;
+const MODEL_SIZES = {
+  [MODELS[0]]: 57311361,
+  [MODELS[1]]: 52861122,
+  [MODELS[2]]: 47309835,
+};
+const modelUrl = (name) => new URL(name, MODEL_BASE).href;
+const pieceKey = (name, i) => `${modelUrl(name)}?piece=${i}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchPiece(url, start, end) {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), STALL_MS);
+  try {
+    const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store", signal: abort.signal });
+    if (res.status === 200) return { whole: await res.arrayBuffer() }; // server ignores ranges
+    if (res.status !== 206) throw new Error(`unexpected response ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength !== end - start + 1) throw new Error("short read");
+    return { piece: buf };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function downloadModel(name) {
+  const cache = await cacheStore();
+  if (await cache.match(modelUrl(name))) return; // stored whole by an earlier version
+  const size = MODEL_SIZES[name];
+  let loaded = 0;
+  for (let i = 0; i * PIECE < size; i++) {
+    const start = i * PIECE;
+    const end = Math.min(size, start + PIECE) - 1;
+    if (!(await cache.match(pieceKey(name, i)))) {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const got = await fetchPiece(modelUrl(name), start, end);
+          if (got.whole) {
+            if (got.whole.byteLength !== size) throw new Error("short read");
+            await cache.put(modelUrl(name), new Response(got.whole));
+            post({ type: "progress", stage: "download", name, loaded: size, total: MODELS_TOTAL_BYTES });
+            return;
+          }
+          await cache.put(pieceKey(name, i), new Response(got.piece));
+          break;
+        } catch (e) {
+          if (attempt >= 3) {
+            throw new Error(
+              `the connection keeps dropping (${e.message}). What has downloaded is kept; try again on a better connection`,
+            );
+          }
+          post({ type: "progress", stage: "retry", name, attempt });
+          await sleep(Math.min(30000, 2000 * attempt * attempt));
+        }
+      }
+    }
+    loaded = end + 1;
+    post({ type: "progress", stage: "download", name, loaded, total: MODELS_TOTAL_BYTES });
+  }
+}
+
+async function rawModelBytes(name) {
+  const cache = await cacheStore();
+  const whole = await cache.match(modelUrl(name));
+  if (whole) return new Uint8Array(await whole.arrayBuffer());
+  const size = MODEL_SIZES[name];
+  const bytes = new Uint8Array(size);
+  for (let i = 0; i * PIECE < size; i++) {
+    const piece = await cache.match(pieceKey(name, i));
+    if (!piece) throw new Error(`model piece missing: ${name} #${i}`);
+    bytes.set(new Uint8Array(await piece.arrayBuffer()), i * PIECE);
+  }
+  return bytes;
+}
+
+async function modelBytes(name) {
+  const bytes = await rawModelBytes(name);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+  if (hash !== MODEL_HASHES[name]) throw new Error("Model integrity check failed. Clear the recognition cache and retry.");
+  return bytes;
+}
+
+const TYPED = {
+  float32: Float32Array,
+  int64: BigInt64Array,
+  int32: Int32Array,
+  uint8: Uint8Array,
+  bool: Uint8Array,
+};
+
+const kept = new Map(); // handle -> ort.Tensor
+let lastKept = 0;
+
+async function newSession(id) {
+  const name = sessionNames[id];
+  const gpu = useGpu && GPU_MODELS.has(name);
+  const eps = gpu ? ["webgpu", "wasm"] : ["wasm"];
+  const t0 = performance.now();
+  const session = await ort.InferenceSession.create(await modelBytes(name), {
+    executionProviders: eps,
+    graphOptimizationLevel: "all",
+  });
+  if (gpu) onGpu.add(id);
+  else onGpu.delete(id);
+  post({ type: "log", msg: `Loaded ${name} on ${eps[0]} in ${Math.round(performance.now() - t0)} ms` });
+  return session;
+}
+
+// Called from omr/onnxruntime.py.
+self.omrOrt = {
+  info(name) {
+    const id = sessionIds.get(name);
+    if (id === undefined) throw new Error(`Recognition model is not ready: ${name}`);
+    const s = sessions[id];
+    return { id, inputNames: s.inputNames, outputNames: s.outputNames };
+  },
+  async create(name) {
+    if (!sessionIds.has(name)) {
+      const id = sessions.length;
+      sessionNames[id] = name;
+      sessions[id] = await newSession(id);
+      sessionIds.set(name, id);
+    }
+    return self.omrOrt.info(name);
+  },
+
+  // feeds: [name, type, dims, bytes], or [name, "kept", handle] for an output
+  // kept from an earlier run. Outputs named in `keep` stay here as handles
+  // (homr's decoder cache: Python only passes it back in on the next step, so
+  // copying it across every step was most of the decoder's time). A kept
+  // tensor is released once it has been passed back in.
+  async run(id, names, feeds, keep = []) {
+    const t0 = performance.now();
+    const inputs = {};
+    const used = [];
+    for (const [name, type, dims, bytes] of feeds) {
+      if (type === "kept") {
+        inputs[name] = kept.get(dims);
+        used.push(dims);
+      } else inputs[name] = new ort.Tensor(type, new TYPED[type](bytes.slice().buffer), dims);
+    }
+    let out;
+    try {
+      out = await sessions[id].run(inputs, names);
+    } catch (e) {
+      // The phone's GPU can go away (e.g. under memory pressure); onnxruntime's
+      // WebGPU backend then fails every run. Carry on without the GPU.
+      if (!onGpu.has(id)) throw e;
+      post({ type: "log", msg: `WebGPU run failed (${e.message}); using WASM from now on` });
+      useGpu = false;
+      for (const other of [...onGpu]) {
+        const old = sessions[other];
+        Promise.resolve().then(() => old.release()).catch(() => {});
+        sessions[other] = await newSession(other);
+      }
+      out = await sessions[id].run(inputs, names);
+    }
+    for (const h of used) kept.delete(h);
+    const t = (runTimes[id] ??= { calls: 0, ms: 0 });
+    t.calls++;
+    t.ms += performance.now() - t0;
+    return names.map((n) => {
+      const t = out[n];
+      if (keep.includes(n)) {
+        kept.set(++lastKept, t);
+        return { type: t.type, dims: t.dims, handle: lastKept };
+      }
+      const d = t.data;
+      return { type: t.type, dims: t.dims, data: new Uint8Array(d.buffer, d.byteOffset, d.byteLength), handle: 0 };
+    });
+  },
+
+  // homr's greedy decoding loop for one staff (homr/transformer/
+  // decoder_inference.py ScoreDecoder.generate), run here so the hundreds of
+  // steps per staff don't each cross into Python and back. Returns, per step,
+  // the chosen token of each head (rhythm, pitch, lift, position, articulation,
+  // slur) and the attention output; the step whose rhythm is EOS isn't included.
+  async generate(id, contextDims, contextBytes, start, nonote, eos, maxLen, heads, headDim, caches) {
+    const t0 = performance.now();
+    const session = sessions[id];
+    const context = new ort.Tensor("float32", new Float32Array(contextBytes.slice().buffer), contextDims);
+    // After the first step homr passes only the context's first position.
+    const reduced = new ort.Tensor("float32", context.data.slice(0, contextDims[2]), [contextDims[0], 1, contextDims[2]]);
+    const token = (v) => new ort.Tensor("int64", BigInt64Array.of(BigInt(v)), [1, 1]);
+    const heads6 = ["out_rhythms", "out_pitchs", "out_lifts", "out_positions", "out_articulations", "out_slurs"];
+    const names = [...heads6, "attention", ...Array.from({ length: caches }, (_, i) => `cache_out${i}`)];
+    let cache = Array.from({ length: caches }, () => new ort.Tensor("float32", new Float32Array(0), [1, heads, 0, headDim]));
+    let last = { rhythm: start, pitch: nonote, lift: nonote, articulation: nonote, slur: nonote };
+    const tokens = [];
+    const attention = [];
+    let attentionDims = [];
+    let steps = 0;
+    for (let step = 0; step < maxLen; step++) {
+      const feeds = {
+        rhythms: token(last.rhythm),
+        pitchs: token(last.pitch),
+        lifts: token(last.lift),
+        articulations: token(last.articulation),
+        slurs: token(last.slur),
+        context: step === 0 ? context : reduced,
+        cache_len: new ort.Tensor("int64", BigInt64Array.of(BigInt(step)), [1]),
+      };
+      cache.forEach((t, i) => (feeds[`cache_in${i}`] = t));
+      const out = await session.run(feeds, names);
+      steps++;
+      cache = names.slice(7).map((n) => out[n]);
+      // Greedy: the most likely token at the last position of each head.
+      const pick = (n) => {
+        const t = out[n];
+        const size = t.dims.at(-1);
+        const d = t.data;
+        let best = d.length - size;
+        for (let k = best + 1; k < d.length; k++) if (d[k] > d[best]) best = k;
+        return best - (d.length - size);
+      };
+      const chosen = heads6.map(pick);
+      if (chosen[0] === eos) break;
+      tokens.push(...chosen);
+      const a = out.attention;
+      attentionDims = a.dims;
+      attention.push(Float32Array.from(a.data));
+      last = { rhythm: chosen[0], pitch: chosen[1], lift: chosen[2], articulation: chosen[4], slur: chosen[5] };
+    }
+    const t = (runTimes[id] ??= { calls: 0, ms: 0 });
+    t.calls += steps;
+    t.ms += performance.now() - t0;
+    const flat = new Float32Array(attention.reduce((n, a) => n + a.length, 0));
+    attention.reduce((at, a) => (flat.set(a, at), at + a.length), 0);
+    return { tokens: Int32Array.from(tokens), attention: new Uint8Array(flat.buffer), attentionDims };
+  },
+
+  // The contents of a kept output, if Python does want to read one.
+  data(handle) {
+    const d = kept.get(handle).data;
+    return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  },
+};
+
+let pyodide;
+let recognise;
+let recogniseProfiled;
+// Per page: time inside each model (session id -> { calls, ms }); the rest of
+// the page's time is homr's Python (image processing, decoding) in Pyodide.
+let runTimes = [];
+
+async function init() {
+  ort = await import(ORT_URL + "ort.webgpu.min.mjs");
+  ort.env.wasm.wasmPaths = ORT_URL;
+  ort.env.wasm.numThreads = self.crossOriginIsolated
+    ? Math.min(4, navigator.hardwareConcurrency || 1)
+    : 1;
+  post({ type: "log", msg: `WASM threads: ${ort.env.wasm.numThreads}` });
+  const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
+  try { useGpu = !!(self.navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { useGpu = false; }
+
+  post({ type: "progress", stage: "python" });
+  pyodide = await loadPyodide({ indexURL: PYODIDE_URL, enableRunUntilComplete: false });
+  pyodide.setStderr({ batched: (msg) => post({ type: "log", msg }) });
+  pyodide.setStdout({ batched: (msg) => post({ type: "log", msg }) });
+  await pyodide.loadPackage(["numpy", "opencv-python", "pillow", "typing-extensions"]);
+
+  const lib = "/home/pyodide/lib";
+  pyodide.FS.mkdirTree(lib);
+  // Same deploy version as this worker (?v=… from scripts/stamp-version.mjs).
+  const v = location.search;
+  const homrZip = await (await fetch("vendor/homr-async.zip" + v)).arrayBuffer();
+  pyodide.unpackArchive(homrZip, "zip", { extractDir: lib });
+  const version = new URLSearchParams(v).get("v");
+  for (const f of ["onnxruntime.py", "runner.py"]) {
+    let text = await (await fetch("omr/" + f + v)).text();
+    // A copy cached by another version would run an old reader with this app
+    // (it happened, see sw.js): fetch it again past any cached copy, and stop
+    // with a clear message if it still isn't this version.
+    const mine = (t) => !version || f !== "runner.py" || t.includes(`VERSION = "${version}"`);
+    if (!mine(text)) text = await (await fetch(`omr/${f}${v}&fresh=${Date.now()}`, { cache: "reload" })).text();
+    if (!mine(text)) throw new Error("The music reader didn't update. Reload Partsong (twice if needed) and try again.");
+    pyodide.FS.writeFile(`${lib}/${f}`, text);
+  }
+  pyodide.runPython(`import sys; sys.path.insert(0, "${lib}")`);
+  recognise = pyodide.pyimport("runner").recognise;
+  recogniseProfiled = pyodide.pyimport("runner").recognise_profiled;
+
+  for (const name of MODELS) {
+    await downloadModel(name);
+  }
+  post({ type: "progress", stage: "models" });
+  // Python constructors remain synchronous and read this already-loaded metadata.
+  // All inference is awaited by the async homr call chain.
+  for (const name of MODELS) await self.omrOrt.create(name);
+  post({ type: "ready", gpu: useGpu });
+}
+
+let ready;
+self.onmessage = async ({ data }) => {
+  try {
+    if (data.type === "init") {
+      ready ??= init();
+      await ready;
+    } else if (data.type === "recognise") {
+      await ready;
+      const path = "/tmp/page.png";
+      pyodide.FS.writeFile(path, new Uint8Array(data.image));
+      const t0 = performance.now();
+      runTimes = [];
+      // data.systems: the user's systems for this page (JSON), if they fixed it.
+      // data.profile (tests/omr-bench.html): logs where the Python's time goes.
+      let xml;
+      let task;
+      try {
+        task = (data.profile ? recogniseProfiled : recognise)(path, data.systems ?? "");
+        xml = await task;
+      }
+      finally {
+        task?.destroy?.();
+        for (const f of pyodide.FS.readdir("/tmp")) if (f.startsWith("page")) { try { pyodide.FS.unlink("/tmp/" + f); } catch {} }
+      }
+      const ms = Math.round(performance.now() - t0);
+      const names = [...sessionIds.keys()];
+      const parts = names.map((n) => `${n.split("_")[0]} ${Math.round(runTimes[sessionIds.get(n)]?.ms ?? 0)} ms/${runTimes[sessionIds.get(n)]?.calls ?? 0} calls`);
+      const inModels = runTimes.reduce((sum, t) => sum + (t?.ms ?? 0), 0);
+      post({ type: "log", msg: `Page in ${ms} ms: ${parts.join(", ")}; Python ${Math.round(ms - inModels)} ms` });
+      post({ type: "result", id: data.id, xml, ms });
+    }
+  } catch (e) {
+    post({ type: "error", id: data.id, msg: String(e && e.message ? e.message : e) });
+  }
+};
