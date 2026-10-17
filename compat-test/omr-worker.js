@@ -1,5 +1,6 @@
 delete WebAssembly.Suspending;
 delete WebAssembly.promising;
+delete WebAssembly.Suspender;
 self.postMessage({type:"capabilities",jspi:typeof WebAssembly.Suspending+"/"+typeof WebAssembly.promising});
 // Adapted for Medici (2026-10-17) from Partsong © 2026 Paul Fremantle. AGPL-3.0.
 // Changes: verified downloads, bounded retry/cleanup, and async Python bridge.
@@ -385,6 +386,6 @@ self.onmessage = async ({ data }) => {
       post({ type: "result", id: data.id, xml, ms });
     }
   } catch (e) {
-    post({ type: "error", id: data.id, msg: String(e && e.message ? e.message : e) });
+    post({ type: "error", id: data.id, msg: String(e && e.stack ? e.stack : e) });
   }
 };

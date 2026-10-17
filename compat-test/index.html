@@ -15,7 +15,7 @@ document.getElementById('start').onclick=async()=>{
  await page.render({canvas,viewport:vp,background:'#fff'}).promise;
  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));const image=await blob.arrayBuffer();
  log('PDF rendered: '+canvas.width+' × '+canvas.height);
- const w=new Worker('omr-worker.js',{type:'module'});
+ const w=new Worker('omr-worker.js'+location.search,{type:'module'});
  w.onmessage=({data})=>{
   if(data.type==='progress'&&data.stage==='download')return;
   if(data.type==='result'){
