@@ -6,6 +6,7 @@
   const clock = seconds => `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.floor(Math.max(0, seconds) % 60)).padStart(2, '0')}`;
   const status = (message, error = false) => { $('status').textContent = message; $('status').classList.toggle('error', error); };
   const state = { context: null, gain: null, samples: new Map(), instrument: 'acoustic_grand_piano', score: null, notes: [], duration: 0, offset: 0, started: 0, playing: false, loading: false, speed: 1, transpose: 0, loop: false, next: 0, token: 0, active: new Set(), timer: null, previewTimer: null, previewing: false };
+  let playbackAudioSession = null;
   let importToken = 0;
   let preferencesRevision = 0;
   let preferencesTimer = null;
@@ -312,7 +313,18 @@
     if (typeof saved.loop === 'boolean') { state.loop = saved.loop; $('loop').setAttribute('aria-pressed', String(saved.loop)); }
   }
 
+  function setAudioSessionType(type) {
+    try {
+      // Web Audio defaults to ambient on iOS. Declare music playback so an
+      // explicit Play/Preview can be heard even while Silent Mode is on.
+      if (type === 'playback') playbackAudioSession = navigator.audioSession;
+      if (playbackAudioSession) playbackAudioSession.type = type;
+    } catch {
+      // AudioSession is optional; unsupported browsers keep normal Web Audio.
+    }
+  }
   function audio() {
+    setAudioSessionType('playback');
     if (!state.context) {
       const Context = window.AudioContext || window.webkitAudioContext;
       if (!Context) throw new Error('This browser does not support Web Audio. Try a current Chrome, Firefox, Safari, or Edge browser.');
@@ -337,6 +349,8 @@
   function stopNodes() {
     for (const node of state.active) { try { node.stop(); } catch {} }
     state.active.clear();
+    // Release the music category after pause, finish, cancellation, or leaving.
+    setAudioSessionType('auto');
   }
   function stopPreview() {
     clearTimeout(state.previewTimer); state.previewing = false;

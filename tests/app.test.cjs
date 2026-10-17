@@ -61,6 +61,23 @@ async function harness(t, options = {}) {
   storage.install(w, { unavailable: options.noStorage, localUnavailable: options.noLocalStorage });
   const errors = [], noteCalls = [], instrumentCalls = [], contexts = [], fetchCalls = [];
   const waits = new Map(), players = new Map(), timers = new Map();
+  const audioEvents = [];
+  const audioSession = { currentType: 'auto' };
+  if (options.audioSession) {
+    Object.defineProperty(audioSession, 'type', {
+      get() { return this.currentType; },
+      set(type) {
+        audioEvents.push(`session:${type}`);
+        if (options.audioSession === 'setter-throws') throw new Error('Audio session unavailable');
+        this.currentType = type;
+      },
+    });
+    Object.defineProperty(w.navigator, 'audioSession', { get() {
+      audioEvents.push('session:get');
+      if (options.audioSession === 'getter-throws') throw new Error('Audio session unavailable');
+      return audioSession;
+    } });
+  }
   let now = 0, nextTimer = 1;
   const addTimer = (fn, delay, interval) => {
     const id = nextTimer++;
@@ -93,9 +110,11 @@ async function harness(t, options = {}) {
       this.currentTime = now / 1000;
       this.destination = {};
       this.resumes = 0;
+      this.state = 'suspended';
+      audioEvents.push('context:create');
       contexts.push(this);
     }
-    resume() { this.resumes++; return Promise.resolve(); }
+    resume() { this.resumes++; this.state = 'running'; audioEvents.push('context:resume'); return Promise.resolve(); }
     createGain() {
       return {
         destination: null,
@@ -151,7 +170,7 @@ async function harness(t, options = {}) {
   });
   await flush();
   return {
-    w, get, change, acceptScore, advance, noteCalls, instrumentCalls, contexts, fetchCalls, storage,
+    w, get, change, acceptScore, advance, noteCalls, instrumentCalls, contexts, fetchCalls, storage, audioEvents, audioSession,
     click: id => get(id).click(),
     choose: name => w.document.querySelector(`[data-instrument="${name}"]`).click(),
     status: () => get('status').textContent,
@@ -179,6 +198,112 @@ test('initial state has a complete sound library and no score or audio until a P
   }
   assert.deepEqual(h.fetchCalls, ['instruments.json']);
 });
+
+test('music audio session starts only on Play, before AudioContext, and is reapplied on resume', async t => {
+  const h = await harness(t, { audioSession: 'supported' });
+  await h.acceptScore('silent-mode.mid');
+  h.choose('violin');
+  assert.deepEqual(h.audioEvents, [], 'Opening a score and choosing a sound do not claim audio focus');
+  h.click('play');
+  assert.deepEqual(h.audioEvents, ['session:get', 'session:playback', 'context:create', 'context:resume']);
+  await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  assert.ok(h.noteCalls.length > 0);
+  h.advance(1000);
+  h.click('play');
+  assert.equal(h.audioSession.type, 'auto');
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+  h.contexts[0].state = 'interrupted';
+  h.click('play'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  assert.equal(h.contexts.length, 1, 'The existing context and samples are reused');
+  assert.equal(h.contexts[0].resumes, 2, 'An explicit Play resumes even an interrupted context');
+  assert.equal(h.contexts[0].state, 'running');
+  near(Number(h.get('seek').value), 1);
+  h.advance(3050);
+  assert.equal(h.audioSession.type, 'auto', 'Natural completion releases the playback category');
+});
+
+test('preview claims playback audio only while requested and releases it on stop or finish', async t => {
+  const h = await harness(t, { audioSession: 'supported' });
+  h.click('preview'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  assert.equal(h.noteCalls.length, 7);
+  h.click('preview');
+  assert.equal(h.audioSession.type, 'auto');
+  h.click('preview'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  h.advance(2700);
+  assert.equal(h.audioSession.type, 'auto');
+  assert.equal(h.contexts.length, 1);
+  assert.equal(h.instrumentCalls.length, 1);
+});
+
+test('switching a playing instrument restores playback audio while stopping a preview releases it', async t => {
+  const h = await harness(t, { audioSession: 'supported' });
+  await h.acceptScore('switch-session.mid');
+  h.click('play'); await flush();
+  h.advance(1000);
+  h.choose('violin'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  assert.equal(h.contexts[0].resumes, 2);
+  near(Number(h.get('seek').value), 1);
+  h.click('preview'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  h.choose('flute'); await flush();
+  assert.equal(h.audioSession.type, 'auto');
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+});
+
+test('cancelled or failed sample loading releases audio without stale playback', async t => {
+  const h = await harness(t, { audioSession: 'supported' });
+  const load = h.deferInstrument('acoustic_grand_piano');
+  h.click('preview'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  h.click('preview');
+  load.resolve(); await flush();
+  assert.equal(h.audioSession.type, 'auto');
+  assert.equal(h.noteCalls.length, 0);
+  await h.acceptScore('failed-session.mid');
+  h.choose('violin');
+  const failed = h.deferInstrument('violin');
+  h.click('play'); await flush();
+  failed.reject(new Error('Network unavailable')); await flush();
+  assert.equal(h.audioSession.type, 'auto');
+  assert.equal(h.noteCalls.length, 0);
+  h.click('play'); await flush();
+  assert.equal(h.audioSession.type, 'playback');
+  assert.ok(h.noteCalls.length > 0);
+});
+
+test('leaving the player releases playback audio and does not restart on page return', async t => {
+  const h = await harness(t, { audioSession: 'supported' });
+  await h.acceptScore('leaving-session.mid');
+  h.click('play'); await flush();
+  h.w.dispatchEvent(new h.w.Event('pagehide'));
+  assert.equal(h.audioSession.type, 'auto');
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+  const count = h.noteCalls.length;
+  h.w.dispatchEvent(new h.w.Event('pageshow'));
+  await flush();
+  assert.equal(h.noteCalls.length, count);
+  assert.equal(h.get('play-text').textContent, 'Play score');
+});
+
+for (const audioSession of [undefined, 'getter-throws', 'setter-throws']) {
+  test(`optional audio session ${audioSession || 'absent'} does not break preview or score playback`, async t => {
+    const h = await harness(t, { audioSession });
+    h.click('preview'); await flush();
+    assert.equal(h.noteCalls.length, 7);
+    h.click('preview');
+    await h.acceptScore('fallback.mid');
+    h.click('play'); await flush();
+    assert.equal(h.get('play-text').textContent, 'Pause');
+    assert.ok(h.noteCalls.length > 7);
+    h.click('play');
+    assert.equal(h.status(), 'Paused.');
+  });
+}
 
 test('featured cards and catalog bridge synchronize badges and selection', async t => {
   const h = await harness(t);

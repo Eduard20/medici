@@ -27,6 +27,7 @@ There is no YouTube player, built-in song, MIDI upload, account, paid backend, o
 - Play/pause, seek, restart, loop, speed, volume, transposition, and melodic-part selection remain available. Advanced playback controls are tucked into a disclosure.
 - Drum tracks, pitch-bend, sustain-pedal automation, and detailed articulations are not reproduced.
 - No samples or audio context are loaded on startup. Samples load on an explicit preview/play action.
+- On browsers with the Audio Session API, explicit Play/Preview selects the music-playback category so iPhone Silent Mode does not mute the score. Stop/pause/finish restores the automatic category. Unsupported browsers retain normal Web Audio behavior; actual audible output in iPhone Safari/Chrome still needs device verification.
 
 ## Privacy and persistence
 
