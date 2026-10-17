@@ -4,6 +4,9 @@ A polished, responsive, static web app for **Love For Duty** by Paolo Buonvino, 
 
 ## What works
 
+- Two visible, ready-to-load MIDI arrangements: **Love for Duty · piano score**, transcribed from the user-provided sheet music by Paolo Buonvino at a steady tempo; and **Two-chord demo**, C major → A minor, four seconds at 120 BPM, from the user-provided code. These are synthesized MIDI arrangements, not the original recording. The demo is not Love for Duty.
+- Love for Duty loads automatically only when there is no privately saved MIDI, without autoplay. Both Load buttons work without uploads and never replace your privately saved arrangement. The requested MIDI files are public in `assets/`; the source PDF is not included.
+
 - Official recording through the visible YouTube player, with a direct YouTube fallback.
 - A separate instrument studio with 128 General MIDI sampled instruments, including guitar, violin, piano, cello, harp, and flute.
 - Local `.mid`/`.midi` import, melodic-part selection, playback/pause, seek, restart, loop, speed, volume, and transposition.
@@ -15,9 +18,9 @@ A polished, responsive, static web app for **Love For Duty** by Paolo Buonvino, 
 
 ## Important distinction
 
-**The app does not convert the official audio recording into another instrument.** A MIDI arrangement is required to replay the song's notes on different instruments. No exact-song MIDI arrangement is bundled because a redistributable arrangement was not available. Import your own arrangement, or one you have permission to use. Drum tracks are excluded. Pitch-bend, sustain-pedal automation, and performance articulations are not currently reproduced.
+**The app does not convert the official audio recording into another instrument.** A MIDI arrangement is required to replay the song's notes on different instruments. The bundled piano-score transcription was created from the user-supplied sheet music and published at their request. It follows a steady tempo rather than recreating the original performance. You may also import your own arrangement. Drum tracks are excluded. Pitch-bend, sustain-pedal automation, and performance articulations are not currently reproduced.
 
-Browser storage is device/browser-specific, is not a cloud backup, and may be erased by clearing site data, private browsing, storage eviction, or browser settings. A one-time MIDI import is still required. If a replacement cannot be saved, the previous saved arrangement may reappear on reload; the app warns about this.
+Browser storage is device/browser-specific, is not a cloud backup, and may be erased by clearing site data, private browsing, storage eviction, or browser settings. A one-time MIDI import is still required for your own arrangement; the two bundled arrangements need no upload. If a replacement cannot be saved, the previous saved arrangement may reappear on reload; the app warns about this.
 
 The soundtrack is streamed by YouTube, not copied into this repository. The player requires an internet connection and remains subject to YouTube availability, regional restrictions, and ads.
 

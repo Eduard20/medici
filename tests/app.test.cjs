@@ -21,6 +21,17 @@ const midiSource = fs.readFileSync(path.join(root, 'vendor/midi.js'), 'utf8');
 const catalog = JSON.parse(fs.readFileSync(path.join(root, 'instruments.json'), 'utf8'));
 const { Midi } = require('../vendor/midi.js');
 const { createStorage } = require('./storage-mock.cjs');
+const DEMO_URL = 'assets/two-chord-demo.mid';
+const LOVE_URL = 'assets/love-for-duty-piano.mid';
+const LOVE_TITLE = 'Love for Duty · piano score';
+const bundledLove = () => {
+  const bytes = fs.readFileSync(path.join(root, LOVE_URL));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+};
+const bundledDemo = () => {
+  const bytes = fs.readFileSync(path.join(root, DEMO_URL));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+};
 const flush = async () => { for (let i = 0; i < 64; i++) await Promise.resolve(); };
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8,
   `Expected ${actual} to be approximately ${expected}`);
@@ -120,10 +131,23 @@ async function harness(t, options = {}) {
     instrumentCalls.push({ context, name, settings });
     return waits.has(name) ? waits.get(name).promise : Promise.resolve(playerFor(name));
   } };
+  const demo = { read: options.demoRead, failure: options.demoFailure, ok: options.demoOk !== false };
+  const love = { read: options.loveRead, failure: options.loveFailure, ok: options.loveOk !== false };
   w.fetch = async url => {
     fetchCalls.push(url);
-    if (options.catalogFailure) throw new Error('Catalog offline');
-    return { ok: true, json: async () => catalog };
+    if (url === 'instruments.json') {
+      if (options.catalogFailure) throw new Error('Catalog offline');
+      return { ok: true, json: async () => catalog };
+    }
+    if (url === DEMO_URL || url === LOVE_URL) {
+      const score = url === DEMO_URL ? demo : love;
+      if (score.failure) throw new Error('Arrangement download failed');
+      return { ok: score.ok, arrayBuffer: async () => {
+        const bytes = await (score.read ? score.read() : url === DEMO_URL ? bundledDemo() : bundledLove());
+        return w.Uint8Array.from(new Uint8Array(bytes)).buffer;
+      } };
+    }
+    throw new Error(`Unexpected network request: ${url}`);
   };
   w.addEventListener('error', event => { errors.push(event.error || event.message); event.preventDefault(); });
   w.eval(midiSource + '\n//# sourceURL=vendor/midi.js');
@@ -153,7 +177,7 @@ async function harness(t, options = {}) {
   });
   await flush();
   return {
-    w, get, change, upload, advance, noteCalls, instrumentCalls, contexts, fetchCalls, storage,
+    w, get, change, upload, advance, noteCalls, instrumentCalls, contexts, fetchCalls, storage, demo, love,
     click: id => get(id).click(),
     choose: name => w.document.querySelector(`[data-instrument="${name}"]`).click(),
     status: () => get('status').textContent,
@@ -164,17 +188,17 @@ async function harness(t, options = {}) {
   };
 }
 
-test('initial state loads the catalog and keeps transport disabled without MIDI', async t => {
+test('initial state loads the catalog and included piano score without starting audio', async t => {
   const h = await harness(t);
   assert.equal(catalog.length, 128);
   assert.equal(catalog.includes('percussion'), false);
   assert.equal(h.get('instrument-select').options.length, catalog.length);
   assert.equal(h.get('instrument-select').value, 'acoustic_grand_piano');
-  for (const id of ['play', 'restart', 'loop', 'seek', 'track']) assert.equal(h.get(id).disabled, true);
+  for (const id of ['play', 'restart', 'loop', 'seek', 'track']) assert.equal(h.get(id).disabled, false);
   assert.equal(h.contexts.length, 0, 'Audio is not created before a gesture');
   assert.equal(h.instrumentCalls.length, 0, 'No samples are loaded on startup');
   assert.equal(h.w.document.querySelector('iframe'), null, 'YouTube is not loaded on startup');
-  assert.deepEqual(h.fetchCalls, ['instruments.json']);
+  assert.deepEqual(h.fetchCalls, ['instruments.json', LOVE_URL]);
 });
 
 test('featured and dropdown instrument selection synchronize badges and selection', async t => {
@@ -230,7 +254,7 @@ test('MIDI import exposes melodic parts, excludes drums, and enables transport',
   assert.equal(h.get('total-time').textContent, '0:04');
   for (const id of ['play', 'restart', 'loop', 'seek', 'track']) assert.equal(h.get(id).disabled, false);
   assert.match(h.status(), /MIDI ready/);
-  assert.deepEqual(h.fetchCalls, ['instruments.json'], 'MIDI contents are never uploaded');
+  assert.deepEqual(h.fetchCalls, ['instruments.json', LOVE_URL], 'Imported MIDI contents are never uploaded');
   assert.equal(h.contexts.length, 0);
 });
 
@@ -338,8 +362,8 @@ test('invalid extension, malformed, empty, and drum-only files show useful error
   await h.upload('drums.mid', fixture({ drumsOnly: true }));
   assert.match(h.status(), /no melodic notes/);
   assert.equal(h.get('status').classList.contains('error'), true);
-  assert.equal(h.get('play').disabled, true);
-  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(h.get('play').disabled, false);
+  assert.equal(h.get('score-name').textContent, LOVE_TITLE);
 });
 
 test('oversized input is rejected before reading file bytes', async t => {
@@ -464,7 +488,7 @@ test('sample-load failure is recoverable and failed cache entries are retried', 
 
 test('catalog failure retains working featured instruments', async t => {
   const h = await harness(t, { catalogFailure: true });
-  assert.match(h.status(), /full instrument list could not load/);
+  assert.equal(h.get('instrument-select').options.length, 4);
   h.choose('cello');
   h.click('preview'); await flush();
   assert.equal(h.noteCalls.length, 7);
@@ -598,7 +622,7 @@ test('drag-and-drop imports uppercase MIDI extensions locally', async t => {
   assert.equal(h.get('file-zone').classList.contains('dragging'), false);
   assert.equal(h.get('score-name').textContent, 'Dropped');
   assert.match(h.status(), /MIDI ready/);
-  assert.deepEqual(h.fetchCalls, ['instruments.json']);
+  assert.deepEqual(h.fetchCalls, ['instruments.json', LOVE_URL]);
 });
 
 test('an arrangement longer than two hours is rejected without replacing valid content', async t => {
@@ -639,7 +663,7 @@ test('import saves the original MIDI bytes in browser storage without transmitti
   assert.deepEqual(new Uint8Array(saved.bytes), new Uint8Array(bytes));
   assert.match(storageText(h), /saved|remembered|stored/i);
   assert.equal(h.get('clear-midi').hidden, false);
-  assert.deepEqual(h.fetchCalls, ['instruments.json']);
+  assert.deepEqual(h.fetchCalls, ['instruments.json', LOVE_URL]);
 });
 
 test('reloading restores a saved MIDI at the beginning without autoplay or sample downloads', async t => {
@@ -782,7 +806,7 @@ test('clear stops playback, removes only the saved MIDI, and prevents later rest
   assert.equal(storageValue(storage, 'arrangement'), undefined);
   assert.equal(storageValue(storage, 'preferences').instrument, 'cello');
   const nextVisit = await harness(t, { storage });
-  assert.equal(nextVisit.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(nextVisit.get('score-name').textContent, LOVE_TITLE);
   assert.equal(nextVisit.get('instrument-select').value, 'cello');
   assert.equal(nextVisit.noteCalls.length, 0);
 });
@@ -848,7 +872,8 @@ test('clear during a pending save cannot resurrect that MIDI after the save fini
   assert.equal(storageValue(h.storage, 'arrangement'), undefined);
   assert.equal(h.get('clear-midi').hidden, true);
   const nextVisit = await harness(t, { storage: h.storage });
-  assert.equal(nextVisit.get('play').disabled, true);
+  assert.equal(nextVisit.get('play').disabled, false);
+  assert.equal(nextVisit.get('score-name').textContent, LOVE_TITLE);
 });
 
 test('import during pending clear remains visible and is saved after deletion', async t => {
@@ -922,4 +947,159 @@ test('timed-out save is aborted and cannot replace the old saved MIDI later', as
   assert.equal(storageValue(storage, 'arrangement').name, 'Preserved.mid');
   await h.upload('Retry succeeded.mid');
   assert.equal(storageValue(storage, 'arrangement').name, 'Retry succeeded.mid');
+});
+
+test('the bundled two-chord asset loads as a four-second demo and is never saved as user MIDI', async t => {
+  const bytes = bundledDemo();
+  const midi = new Midi(bytes);
+  assert.equal(bytes.byteLength, 98);
+  near(midi.duration, 4);
+  assert.equal(midi.tracks.length, 1);
+  assert.deepEqual(midi.tracks[0].notes.map(note => [note.midi, note.time, note.duration]), [
+    [60, 0, 2], [64, 0, 2], [67, 0, 2], [57, 2, 2], [60, 2, 2], [64, 2, 2],
+  ]);
+  const h = await harness(t);
+  h.click('load-demo'); await flush();
+  assert.equal(h.get('score-name').textContent, 'Two-chord demo');
+  assert.match(h.get('score-meta').textContent, /^6 notes · 1 melodic part · 0:04$/);
+  assert.match(h.get('file-description').textContent, /not “Love For Duty”/);
+  assert.equal(h.get('clear-midi').hidden, true);
+  assert.equal(storageValue(h.storage, 'arrangement'), undefined);
+  assert.equal(h.storage.operations.includes('write'), false);
+  assert.equal(h.contexts.length, 0);
+  h.click('play'); await flush();
+  assert.deepEqual(h.noteCalls.map(call => call.pitch), [60, 64, 67]);
+  assert.match(h.status(), /two-chord demo, not Love For Duty/);
+  h.advance(2050);
+  assert.deepEqual(h.noteCalls.map(call => call.pitch), [60, 64, 67, 57, 60, 64]);
+});
+
+test('a saved user MIDI takes precedence and prevents automatic bundled-score fetching', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('User piece.mid') });
+  const h = await harness(t, { storage });
+  assert.equal(h.get('score-name').textContent, 'User piece');
+  assert.deepEqual(h.fetchCalls, ['instruments.json']);
+  assert.equal(h.contexts.length, 0);
+  assert.equal(h.get('clear-midi').hidden, false);
+});
+
+test('explicit demo selection preserves the user MIDI and the next reload restores it', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Keep my piece.mid') });
+  const h = await harness(t, { storage });
+  h.click('play'); await flush();
+  h.click('load-demo'); await flush();
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+  assert.equal(h.get('score-name').textContent, 'Two-chord demo');
+  assert.equal(h.get('play-text').textContent, 'Play arrangement');
+  assert.equal(h.get('clear-midi').hidden, true);
+  assert.equal(storageValue(storage, 'arrangement').name, 'Keep my piece.mid');
+  assert.equal(storage.operations.includes('write'), false);
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('score-name').textContent, 'Keep my piece');
+  assert.equal(nextVisit.contexts.length, 0);
+  assert.deepEqual(nextVisit.fetchCalls, ['instruments.json']);
+});
+
+for (const failure of ['network', 'http']) {
+  test(`a ${failure} demo download failure is graceful and can be retried`, async t => {
+    const h = await harness(t, failure === 'network' ? { demoFailure: true } : { demoOk: false });
+    h.click('load-demo'); await flush();
+    assert.match(h.status(), /Couldn’t load Two-chord demo/);
+    assert.equal(h.get('play').disabled, false);
+    assert.equal(h.get('score-name').textContent, LOVE_TITLE);
+    assert.equal(h.contexts.length, 0);
+    assert.equal(storageValue(h.storage, 'arrangement'), undefined);
+    h.demo.failure = false;
+    h.demo.ok = true;
+    h.click('load-demo'); await flush();
+    assert.equal(h.get('score-name').textContent, 'Two-chord demo');
+    assert.equal(h.get('play').disabled, false);
+    assert.equal(h.get('status').classList.contains('error'), false);
+    assert.equal(h.noteCalls.length, 0);
+  });
+}
+
+test('importing user MIDI defeats a slow automatic piano-score download', async t => {
+  const pending = deferred();
+  const h = await harness(t, { loveRead: () => pending.promise });
+  assert.ok(h.fetchCalls.includes(LOVE_URL));
+  await h.upload('New user piece.mid');
+  pending.resolve(bundledLove()); await flush();
+  assert.equal(h.get('score-name').textContent, 'New user piece');
+  assert.equal(storageValue(h.storage, 'arrangement').name, 'New user piece.mid');
+  assert.match(h.status(), /MIDI ready/);
+  assert.equal(h.get('clear-midi').hidden, false);
+});
+
+test('clearing a saved MIDI defeats an in-flight explicit demo download', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('Remove me.mid') });
+  const h = await harness(t, { storage });
+  const pending = deferred();
+  h.demo.read = () => pending.promise;
+  h.click('load-demo'); await flush();
+  assert.equal(h.get('clear-midi').hidden, false);
+  h.click('clear-midi'); await flush();
+  pending.resolve(bundledDemo()); await flush();
+  assert.equal(h.get('score-name').textContent, 'No MIDI loaded');
+  assert.equal(h.get('play').disabled, true);
+  assert.equal(storageValue(storage, 'arrangement'), undefined);
+  assert.equal(h.get('clear-midi').hidden, true);
+  assert.match(storageText(h), /removed/i);
+});
+
+test('a stale failed piano-score download cannot overwrite a successful import status', async t => {
+  const pending = deferred();
+  const h = await harness(t, { loveRead: () => pending.promise });
+  await h.upload('Success.mid');
+  pending.reject(new Error('Old piano-score download failed')); await flush();
+  assert.equal(h.get('score-name').textContent, 'Success');
+  assert.match(h.status(), /MIDI ready/);
+  assert.equal(h.get('status').classList.contains('error'), false);
+});
+
+test('the included piano transcription loads by default and both score buttons are visible', async t => {
+  const bytes = bundledLove();
+  const midi = new Midi(bytes);
+  assert.equal(bytes.byteLength, 8302);
+  assert.equal(midi.tracks.length, 2);
+  assert.deepEqual(midi.tracks.map(track => track.notes.length), [423, 96]);
+  near(midi.duration, 116);
+  const h = await harness(t);
+  assert.equal(h.get('score-name').textContent, LOVE_TITLE);
+  assert.match(h.get('score-meta').textContent, /^519 notes · 2 melodic parts · 1:56$/);
+  assert.match(h.get('load-love-duty').textContent, /Load Love for Duty/i);
+  assert.match(h.get('load-demo').textContent, /Load two.chord demo/i);
+  assert.equal(h.get('load-love-duty').hidden, false);
+  assert.equal(h.get('load-demo').hidden, false);
+  assert.equal(h.contexts.length, 0);
+  assert.equal(storageValue(h.storage, 'arrangement'), undefined);
+  assert.equal(h.storage.operations.includes('write'), false);
+  h.click('play'); await flush();
+  assert.match(h.status(), /Love for Duty piano-score transcription/);
+});
+
+test('the Love for Duty button loads the piano score while preserving saved user MIDI', async t => {
+  const storage = seededStorage({ arrangement: savedArrangement('My own saved.mid') });
+  const h = await harness(t, { storage });
+  h.click('load-love-duty'); await flush();
+  assert.equal(h.get('score-name').textContent, LOVE_TITLE);
+  assert.equal(h.get('play-text').textContent, 'Play arrangement');
+  assert.equal(h.get('clear-midi').hidden, true);
+  assert.equal(h.contexts.length, 0);
+  assert.equal(storageValue(storage, 'arrangement').name, 'My own saved.mid');
+  const nextVisit = await harness(t, { storage });
+  assert.equal(nextVisit.get('score-name').textContent, 'My own saved');
+  assert.deepEqual(nextVisit.fetchCalls, ['instruments.json']);
+});
+
+test('the latest bundled-score selection defeats an earlier delayed selection', async t => {
+  const h = await harness(t);
+  const pending = deferred();
+  h.demo.read = () => pending.promise;
+  h.click('load-demo'); await flush();
+  h.click('load-love-duty'); await flush();
+  pending.resolve(bundledDemo()); await flush();
+  assert.equal(h.get('score-name').textContent, LOVE_TITLE);
+  assert.equal(h.contexts.length, 0);
+  assert.equal(storageValue(h.storage, 'arrangement'), undefined);
 });

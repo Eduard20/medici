@@ -14,6 +14,11 @@
   let databasePromise = null;
   let storageQueue = Promise.resolve();
   let knownInstruments = null;
+  let arrangementKind = 'imported';
+  const bundledScores = {
+    love: {url: 'assets/love-for-duty-piano.mid', name: 'Love for Duty · piano score', description: 'Paolo Buonvino · transcription from your piano score. Steady tempo, not the original recording.'},
+    demo: {url: 'assets/two-chord-demo.mid', name: 'Two-chord demo', description: 'C major → A minor · 4 seconds. From your code, not “Love For Duty”.'}
+  };
   const storageStatus = (message, error = false) => {
     $('storage-status').textContent = message;
     $('storage-status').classList.toggle('error', error);
@@ -226,7 +231,7 @@
       state.next = state.notes.findIndex(note => note.time + note.duration > state.offset);
       if (state.next < 0) state.next = state.notes.length;
       schedule(player); state.timer = setInterval(() => schedule(player), 30);
-      status(`Playing ${label(state.instrument).toLowerCase()} · imported MIDI arrangement.`);
+      status(`Playing ${label(state.instrument).toLowerCase()} · ${arrangementKind === 'demo' ? 'two-chord demo, not Love For Duty' : arrangementKind === 'love' ? 'Love for Duty piano-score transcription' : 'imported MIDI arrangement'}.`);
     } catch (err) {
       if (token !== state.token) return;
       stop(false); status(`Couldn’t load instrument samples. Check your internet connection and try again. ${String(err?.message || err).slice(0, 100)}`, true);
@@ -301,6 +306,7 @@
     return midi;
   }
   function showScore(midi, name, restored = false) {
+    arrangementKind = 'imported';
     state.score = midi;
     $('track').replaceChildren(new Option('All melodic parts', 'all'));
     midi.tracks.forEach((track, index) => { if (!track.instrument.percussion && track.notes.length) $('track').add(new Option(track.name || `Part ${index + 1} · ${track.instrument.name}`, String(index))); });
@@ -311,6 +317,31 @@
     $('clear-midi').hidden = false;
     loadPart();
   }
+  async function loadBundled(kind, expectedToken) {
+    const token = expectedToken === undefined ? ++importToken : expectedToken;
+    if (token !== importToken) return;
+    stop(false); stopPreview();
+    const score = bundledScores[kind];
+    status(`Loading ${score.name}…`);
+    try {
+      const response = await fetch(score.url);
+      if (!response.ok) throw new Error('Arrangement file unavailable.');
+      const bytes = await response.arrayBuffer();
+      if (token !== importToken) return;
+      const midi = parseScore(bytes);
+      showScore(midi, score.name);
+      arrangementKind = kind;
+      $('file-description').textContent = score.description;
+      $('clear-midi').hidden = true;
+      status(`${score.name} ready. Choose an instrument and press Play arrangement.`);
+      storageStatus('Included arrangement loaded without an upload. Your saved MIDI, if any, has not been replaced.');
+    } catch {
+      if (token !== importToken) return;
+      status(`Couldn’t load ${score.name}. Check your connection and try its Load button again.`, true);
+    }
+  }
+  $('load-demo').addEventListener('click', () => loadBundled('demo'));
+  $('load-love-duty').addEventListener('click', () => loadBundled('love'));
   async function importFile(file) {
     if (!file) return;
     const token = ++importToken;
@@ -343,7 +374,7 @@
     try {
       const saved = await stored('arrangement');
       if (token !== importToken) return;
-      if (!saved) { storageStatus('Import once to save your MIDI privately in this browser.'); return; }
+      if (!saved) { await loadBundled('love', token); return; }
       $('clear-midi').hidden = false;
       if (saved.version !== 1 || typeof saved.name !== 'string' || !/\.midi?$/i.test(saved.name)) throw new Error('Saved file is not a supported MIDI record.');
       const midi = parseScore(saved.bytes);

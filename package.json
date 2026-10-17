@@ -1,6 +1,6 @@
 {
   "name": "medici-listening-room",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "A static listening room and local MIDI instrument studio.",
   "scripts": {

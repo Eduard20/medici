@@ -20,7 +20,9 @@ const server = http.createServer((req, res) => {
  await page.goto('http://127.0.0.1:8765/', {waitUntil:'networkidle'});
  await page.screenshot({path:path.join(root,'../medici-desktop.png'),fullPage:true});
  assert.equal(await page.locator('h1').innerText(),'Love\nfor Duty.');
- assert.equal(await page.locator('#play').isDisabled(),true);
+ await page.waitForFunction(()=>document.querySelector('#score-name').textContent==='Love for Duty · piano score');
+ assert.equal(await page.locator('#play').isDisabled(),false);
+ assert.equal(await page.locator('#play-text').innerText(),'Play arrangement');
  assert.equal(await page.locator('#instrument-select option').count(),128);
  await page.locator('[data-instrument="violin"]').click();
  assert.equal(await page.locator('[data-instrument="violin"]').getAttribute('aria-pressed'),'true');
