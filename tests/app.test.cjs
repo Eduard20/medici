@@ -169,7 +169,7 @@ test('initial state has a complete sound library and no score or audio until a P
   assert.equal(h.get('instrument-select').options.length, catalog.length);
   assert.equal(h.get('instrument-select').value, 'acoustic_grand_piano');
   for (const id of ['play', 'restart', 'loop', 'seek', 'track']) assert.equal(h.get(id).disabled, true);
-  assert.equal(h.get('preview').disabled, false, 'Sounds can still be auditioned before converting a PDF');
+  assert.equal(h.get('preview').disabled, false, 'Preview becomes available when the hidden studio is revealed');
   assert.equal(h.get('clear-midi').hidden, true);
   assert.equal(h.contexts.length, 0, 'Audio is not created before a gesture');
   assert.equal(h.instrumentCalls.length, 0, 'No samples are loaded on startup');
@@ -824,7 +824,7 @@ test('the newest conversion remains saved when an earlier score write is delayed
   assert.equal(storageValue(h.storage, 'pdf-arrangement').name, 'Newest.mid');
 });
 
-test('a blocked database open times out while the converted score stays usable', async t => {
+test('a blocked startup database open times out and a fresh safe read recovers saving', async t => {
   const storage = createStorage();
   const pending = storage.holdNext('open');
   const h = await harness(t, { storage });
@@ -832,7 +832,8 @@ test('a blocked database open times out while the converted score stays usable',
   await h.acceptScore('Offline storage.mid');
   h.advance(8001); await flush();
   assert.equal(h.get('play').disabled, false);
-  assert.match(storageText(h), /couldn.t|cannot|can.t|unavailable|timed? out|not saved/i);
+  assert.match(storageText(h), /saved/i);
+  assert.equal(storageValue(storage, 'pdf-arrangement').name, 'Offline storage.mid');
   h.click('play'); await flush();
   assert.equal(h.get('play-text').textContent, 'Pause');
   pending.release(); await flush();
@@ -1388,3 +1389,161 @@ test('clearing the current score cancels inline recognition and prevents its lat
   assert.equal(h.noteCalls.length, 0);
 });
 
+
+// Progressive disclosure and multi-piece library regression coverage.
+const savedButtons = h => Array.from(h.get('saved-music-list').querySelectorAll('.saved-piece-open'));
+const libraryTitles = h => savedButtons(h).map(button => button.querySelector('strong').textContent);
+const assertView = (h, expected) => {
+  assert.equal(h.get('studio').dataset.view, expected);
+  for (const id of ['choose-sound', 'play-score', 'workspace-heading']) {
+    assert.equal(h.get(id).hidden, expected !== 'score');
+    assert.equal(h.get(id).hasAttribute('inert'), expected !== 'score');
+  }
+  assert.equal(h.get('saved-music').hidden, expected !== 'library');
+  assert.equal(h.get('upload-score').hidden, expected === 'score');
+};
+test('first visit shows only upload and saved music, without step navigation or focusable hidden panels', async t => {
+  const h = await harness(t);
+  assertView(h, 'library');
+  assert.equal(h.w.document.querySelector('.studio-steps'), null);
+  assert.equal(h.get('saved-music-empty').hidden, false);
+  assert.deepEqual(libraryTitles(h), []);
+  assert.equal(h.contexts.length, 0);
+});
+test('a legacy PDF is listed on return and opens only when explicitly chosen', async t => {
+  const storage = seededStorage({'pdf-arrangement': savedArrangement('Previous PDF.mid')});
+  const h = await harness(t, {storage});
+  assertView(h, 'library');
+  assert.deepEqual(libraryTitles(h), ['Previous PDF']);
+  assert.equal(h.instrumentCalls.length, 0);
+  savedButtons(h)[0].click();
+  assertView(h, 'score');
+  assert.equal(h.get('score-name').textContent, 'Previous PDF');
+  assert.equal(h.w.document.activeElement.id, 'choose-sound-title');
+  assert.equal(h.contexts.length, 0);
+});
+test('conversion progress hides both library and player; cancel and errors return to the intact library', async t => {
+  const h = await harness(t);
+  await h.acceptScore('Keep me.mid');
+  h.click('back-to-library');
+  const inline = installInlineConversion(h, {holdRecognition: true});
+  await inline.select('Next.pdf');
+  assertView(h, 'converting');
+  assert.equal(h.get('conversion-title').hidden, false);
+  assert.equal(h.w.document.activeElement.id, 'conversion-title');
+  assert.equal(h.w.document.querySelector('.sheet-options').hasAttribute('inert'), true);
+  h.click('sheet-cancel'); await flush();
+  assertView(h, 'library');
+  assert.deepEqual(libraryTitles(h), ['Keep me']);
+  assert.equal(h.get('play-text').textContent, 'Play score');
+  assert.equal(h.w.document.activeElement.id, 'upload-title');
+  await inline.select('Retry.pdf');
+  inline.workers[1].onmessage({data: {type: 'error', msg: 'Recognition failed for this test'}});
+  await flush();
+  assertView(h, 'library');
+  assert.match(h.get('sheet-status').textContent, /Recognition failed/);
+  assert.deepEqual(libraryTitles(h), ['Keep me']);
+});
+test('multiple conversions preserve legacy music, reload to the library, and remove only the chosen piece', async t => {
+  const storage = seededStorage({'pdf-arrangement': savedArrangement('Legacy PDF.mid')});
+  const h = await harness(t, {storage});
+  await h.acceptScore('First new.mid');
+  await h.acceptScore('Second new.mid');
+  assertView(h, 'score');
+  assert.deepEqual(libraryTitles(h), ['Second new', 'First new', 'Legacy PDF']);
+  const next = await harness(t, {storage});
+  assertView(next, 'library');
+  assert.deepEqual(libraryTitles(next), ['Second new', 'First new', 'Legacy PDF']);
+  savedButtons(next)[1].click();
+  assert.equal(next.get('score-name').textContent, 'First new');
+  assertView(next, 'score');
+  next.click('clear-midi'); await flush();
+  assertView(next, 'library');
+  assert.deepEqual(libraryTitles(next), ['Second new', 'Legacy PDF']);
+  const last = await harness(t, {storage});
+  assert.deepEqual(libraryTitles(last), ['Second new', 'Legacy PDF']);
+  savedButtons(last)[1].click();
+  assert.equal(last.get('score-name').textContent, 'Legacy PDF');
+});
+test('returning to library stops playback and a stale pending sound cannot start behind it', async t => {
+  const h = await harness(t);
+  await h.acceptScore('Silence behind library.mid');
+  const wait = h.deferInstrument('acoustic_grand_piano');
+  h.click('play'); await flush();
+  h.click('back-to-library');
+  assertView(h, 'library');
+  wait.resolve(); await flush();
+  assert.equal(h.noteCalls.length, 0);
+  savedButtons(h)[0].click();
+  h.click('play'); await flush();
+  assert.ok(h.noteCalls.length > 0);
+  h.click('back-to-library');
+  assert.ok(h.noteCalls.every(call => call.node.stopped));
+});
+test('failed save keeps older music and an unsaved session piece available through library navigation', async t => {
+  const h = await harness(t);
+  await h.acceptScore('Saved original.mid');
+  h.storage.failNext('write', 'QuotaExceededError');
+  await h.acceptScore('Unsaved session.mid');
+  h.click('back-to-library');
+  assert.deepEqual(libraryTitles(h), ['Unsaved session', 'Saved original']);
+  assert.match(savedButtons(h)[0].textContent, /This visit only/);
+  savedButtons(h)[1].click();
+  h.click('back-to-library');
+  assert.deepEqual(libraryTitles(h), ['Unsaved session', 'Saved original']);
+  savedButtons(h)[0].click();
+  assert.equal(h.get('score-name').textContent, 'Unsaved session');
+  assert.equal(h.get('play').disabled, false);
+});
+test('a failed removal leaves the library item available for a visible retry', async t => {
+  const h = await harness(t);
+  await h.acceptScore('Retry removal.mid');
+  h.storage.failNext('delete', 'UnknownError');
+  h.click('clear-midi'); await flush();
+  assertView(h, 'library');
+  assert.deepEqual(libraryTitles(h), ['Retry removal']);
+  h.get('saved-music-list').querySelector('.saved-piece-remove').click(); await flush();
+  assert.deepEqual(libraryTitles(h), []);
+  assert.equal(h.get('saved-music-empty').hidden, false);
+});
+test('damaged saved items are removable from the library without revealing an empty player', async t => {
+  const storage = seededStorage({'pdf-arrangement': savedArrangement('Broken.mid', Uint8Array.from([1,2,3]).buffer)});
+  const h = await harness(t, {storage});
+  savedButtons(h)[0].click();
+  assertView(h, 'library');
+  assert.match(storageText(h), /Couldn’t open/);
+  h.get('saved-music-list').querySelector('.saved-piece-remove').click(); await flush();
+  assert.deepEqual(libraryTitles(h), []);
+});
+test('saving while returning to the library updates its status and does not reopen the studio', async t => {
+  const h = await harness(t);
+  const hold = h.storage.holdNext('write');
+  await h.acceptScore('Save in background.mid');
+  await hold.reached;
+  h.click('back-to-library');
+  hold.release(); await flush();
+  assertView(h, 'library');
+  assert.match(storageText(h), /Score saved/);
+  assert.deepEqual(libraryTitles(h), ['Save in background']);
+});
+
+test('two open tabs save and remove against the latest collection without losing each other’s music', async t => {
+  const storage = seededStorage({'pdf-arrangement': savedArrangement('Original.mid')});
+  const first = await harness(t, {storage});
+  const second = await harness(t, {storage});
+  await first.acceptScore('Tab A.mid');
+  await second.acceptScore('Tab B.mid');
+  let next = await harness(t, {storage});
+  assert.deepEqual(libraryTitles(next), ['Tab B', 'Tab A', 'Original']);
+  first.click('clear-midi'); await flush();
+  next = await harness(t, {storage});
+  assert.deepEqual(libraryTitles(next), ['Tab B', 'Original']);
+});
+test('session-only music can be removed even when IndexedDB is unavailable', async t => {
+  const h = await harness(t, {noStorage: true});
+  await h.acceptScore('Temporary.mid');
+  h.click('clear-midi'); await flush();
+  assertView(h, 'library');
+  assert.deepEqual(libraryTitles(h), []);
+  assert.equal(h.get('play').disabled, true);
+});

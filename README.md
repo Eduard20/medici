@@ -1,11 +1,11 @@
 # Sheet Music Studio
 
-A single-screen, private **PDF sheet music → instrument playback** app. Public deployment: https://eduard20.github.io/medici/ (the existing repository URL is unchanged).
+A progressive, single-page, private **PDF sheet music → instrument playback** app. Public deployment: https://eduard20.github.io/medici/ (the existing repository URL is unchanged).
 
 ## Use it
 
-1. Choose a printed sheet-music PDF. Recognition starts on this page, with progress and cancellation.
-2. Find a sound in the searchable 128-instrument library. Eight suggested sounds are shown first; family filters expose the full catalog without a long dropdown.
+1. Start with **Upload sheet music** and your **Saved music** library. Choose a printed sheet-music PDF; only recognition progress and cancellation are shown while it is read.
+2. When conversion finishes, or when you open a saved piece, the instrument picker and player appear. Find a sound in the searchable 128-instrument library. Eight suggested sounds are shown first; family filters expose the full catalog without a long dropdown.
 3. Press **Play score**. The recognized notes are ready automatically, with no MIDI import, download, or second page required.
 
 There is no YouTube player, built-in song, MIDI upload, account, paid backend, or autoplay. Optional MIDI export remains a secondary action. The old `convert.html` URL redirects to the studio.
@@ -32,7 +32,7 @@ There is no YouTube player, built-in song, MIDI upload, account, paid backend, o
 
 PDF pages and recognized notes never leave the browser. Runtime/model/sample/font hosts receive ordinary request metadata, but no score data. Sources: versioned jsDelivr packages, official Partsong model hosting, gleitz.github.io samples, and Google Fonts.
 
-Converted scores are saved as `pdf-arrangement` in the existing IndexedDB database. Legacy song/manual-import records are deliberately not restored. Instrument, speed, transpose, volume, and loop preferences remain local. Reload restores the converted score at the beginning without autoplay. **Remove saved score** clears it and cancels active recognition. A storage failure is reported; playback for the current visit still works.
+Multiple converted pieces are saved atomically as `pdf-arrangement` in the existing IndexedDB database (latest piece plus earlier entries). The previous single saved PDF is preserved automatically. Legacy song/manual-import records are deliberately not restored. Instrument, speed, transpose, volume, and loop preferences remain local. Reload opens the upload/library view without autoplay; choose a saved piece to reveal its player. **Your music** returns to the library and stops audio. **Remove saved score** deletes only that piece and cancels active recognition. Cross-tab writes merge inside a transaction. A storage failure is reported; unsaved pieces remain playable for the current visit.
 
 Storage is device/browser-specific, has no cloud backup or cross-device sync, and may be erased by clearing site data, private browsing, or eviction. Clearing downloaded models does not delete saved music.
 

@@ -22,6 +22,32 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => document.querySelector('#instrument-select').options.length === 128);
     assert.equal(await page.locator('#play').isDisabled(), true);
     assert.equal(await page.locator('iframe, #midi-file, #load-demo, #load-love-duty').count(), 0);
+    assert.equal(await page.locator('#choose-sound').isVisible(), false);
+    assert.equal(await page.locator('#play-score').isVisible(), false);
+    assert.equal(await page.locator('#saved-music').isVisible(), true);
+    assert.equal(await page.locator('.studio-steps').count(), 0);
+    await page.screenshot({path:path.join(root,'../sheet-studio-library-desktop.png'),fullPage:true});
+    for (const width of [320,390,768]) {
+      await page.setViewportSize({width,height:844});
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Library overflow at ${width}px`);
+    }
+    await page.setViewportSize({width:390,height:844});
+    await page.screenshot({path:path.join(root,'../sheet-studio-library-mobile.png'),fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+    if (process.env.PDF_FIXTURE) {
+      await page.locator('#sheet-pdf').setInputFiles(path.resolve(process.env.PDF_FIXTURE));
+      await page.waitForFunction(() => !document.querySelector('#play').disabled || document.querySelector('#sheet-status').classList.contains('error'), {}, {timeout:15*60*1000});
+      assert.equal(await page.locator('#play').isDisabled(), false, await page.locator('#sheet-status').innerText());
+      assert.equal(await page.url(), `http://127.0.0.1:${server.address().port}/`);
+    } else {
+      const midi = new Midi(); midi.header.setTempo(100);
+      midi.addTrack().addNote({midi:60,time:0,duration:4,velocity:.7}).addNote({midi:64,time:4,duration:4,velocity:.7});
+      await page.evaluate(bytes => window.dispatchEvent(new CustomEvent('medici:score-ready', {detail:{name:'Browser QA score.mid',bytes:Uint8Array.from(bytes).buffer}})), [...midi.toArray()]);
+      console.log('OMR skipped: set PDF_FIXTURE for a real PDF recognition pass. Player uses a generated test score.');
+    }
+    assert.equal(await page.locator('#choose-sound').isVisible(), true);
+    assert.equal(await page.locator('#play-score').isVisible(), true);
+    assert.equal(await page.locator('#upload-score').isVisible(), false);
     assert.equal(await page.locator('[data-instrument]').count(), 8);
     await page.locator('[data-family="strings"]').click();
     assert.equal(await page.locator('[data-instrument="violin"]').count(), 1);
@@ -40,17 +66,6 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => /Previewing|Couldn.t/.test(document.querySelector('#status').textContent), {}, {timeout:60000});
     assert.match(await page.locator('#status').innerText(), /^Previewing/);
     await page.locator('#preview').click();
-    if (process.env.PDF_FIXTURE) {
-      await page.locator('#sheet-pdf').setInputFiles(path.resolve(process.env.PDF_FIXTURE));
-      await page.waitForFunction(() => !document.querySelector('#play').disabled || document.querySelector('#sheet-status').classList.contains('error'), {}, {timeout:15*60*1000});
-      assert.equal(await page.locator('#play').isDisabled(), false, await page.locator('#sheet-status').innerText());
-      assert.equal(await page.url(), `http://127.0.0.1:${server.address().port}/`);
-    } else {
-      const midi = new Midi(); midi.header.setTempo(100);
-      midi.addTrack().addNote({midi:60,time:0,duration:4,velocity:.7}).addNote({midi:64,time:4,duration:4,velocity:.7});
-      await page.evaluate(bytes => window.dispatchEvent(new CustomEvent('medici:score-ready', {detail:{name:'Browser QA score.mid',bytes:Uint8Array.from(bytes).buffer}})), [...midi.toArray()]);
-      console.log('OMR skipped: set PDF_FIXTURE for a real PDF recognition pass. Player uses a generated test score.');
-    }
     await page.locator('#play').click();
     await page.waitForFunction(() => document.querySelector('#play-text').textContent === 'Pause');
     await page.waitForTimeout(1100);
@@ -65,6 +80,10 @@ const server = http.createServer((req, res) => {
     const title = await page.locator('#score-name').innerText();
     await page.screenshot({path:path.join(root,'../sheet-studio-desktop.png'),fullPage:true});
     await page.reload({waitUntil:'networkidle'});
+    await page.waitForFunction(() => document.querySelectorAll('.saved-piece-open').length > 0);
+    assert.equal(await page.locator('#choose-sound').isVisible(), false);
+    assert.equal(await page.locator('#saved-music').isVisible(), true);
+    await page.locator('.saved-piece-open').first().click();
     await page.waitForFunction(expected => document.querySelector('#score-name').textContent === expected, title);
     assert.equal(await page.locator('#play-text').innerText(), 'Play score');
     assert.equal(await page.locator('#selected-instrument').innerText(), 'Violin');
@@ -74,11 +93,17 @@ const server = http.createServer((req, res) => {
     }
     await page.setViewportSize({width:390,height:844});
     await page.screenshot({path:path.join(root,'../sheet-studio-mobile.png'),fullPage:true});
+    await page.locator('#back-to-library').click();
+    assert.equal(await page.locator('#choose-sound').isVisible(), false);
+    await page.locator('.saved-piece-open').first().press('Enter');
+    assert.equal(await page.locator('#choose-sound').isVisible(), true);
     await page.locator('#clear-midi').click();
     await page.waitForFunction(() => document.querySelector('#clear-midi').hidden);
     await page.reload({waitUntil:'networkidle'});
     assert.equal(await page.locator('#play').isDisabled(), true);
+    assert.equal(await page.locator('#saved-music-empty').isVisible(), true);
+    assert.equal(await page.locator('#choose-sound').isVisible(), false);
     assert.deepEqual(errors, []);
-    console.log('PASS: 128 sounds, search/families/reset, keyboard selection, real sample preview/playback, controls, storage/restore/clear and 320–1440px layout.');
+    console.log('PASS: progressive library/studio flow, explicit saved-piece opening, return navigation, 128 sounds, search/families/reset, keyboard selection, real sample preview/playback, controls, storage/restore/clear and 320–1440px layout.');
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode=1; });

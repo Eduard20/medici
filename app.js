@@ -12,6 +12,123 @@
   let databasePromise = null;
   let storageQueue = Promise.resolve();
   let knownInstruments = null;
+  let view = 'library';
+  let libraryEntries = [];
+  let currentEntry = null;
+  let libraryReady;
+  const sessionEntries = new Map();
+  const pendingRemovals = new Set();
+  const scoreTitle = name => (typeof name === 'string' ? name : 'Saved score').replace(/\.midi?$/i, '');
+  const entryId = () => window.crypto?.randomUUID?.() || `score-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  function setView(next, focus = false) {
+    view = next;
+    $('studio').dataset.view = next;
+    const visible = {
+      'library-intro': next === 'library', 'upload-score': next !== 'score',
+      'saved-music': next === 'library', 'workspace-heading': next === 'score',
+      'choose-sound': next === 'score', 'play-score': next === 'score'
+    };
+    for (const [id, show] of Object.entries(visible)) {
+      $(id).hidden = !show;
+      $(id).toggleAttribute('inert', !show);
+    }
+    $('conversion-title').hidden = next !== 'converting';
+    // Upload options stay out of the keyboard order while only progress is shown.
+    document.querySelectorAll('.sheet-upload, .sheet-options').forEach(element => element.toggleAttribute('inert', next === 'converting'));
+    if (focus) {
+      const target = $(next === 'score' ? 'choose-sound-title' : next === 'converting' ? 'conversion-title' : 'upload-title');
+      target.focus({preventScroll: true});
+      (next === 'score' ? $('workspace-heading') : target).scrollIntoView?.({block: 'start', behavior: 'auto'});
+    }
+  }
+  function renderLibrary() {
+    const entries = [...libraryEntries];
+    for (const entry of sessionEntries.values()) if (!entries.some(saved => saved.id === entry.id)) entries.unshift({...entry, temporary: true});
+    const shown = entries.filter(entry => !pendingRemovals.has(entry.id));
+    $('saved-music-empty').hidden = shown.length > 0;
+    $('saved-music-count').textContent = shown.length ? `${shown.length} ${shown.length === 1 ? 'piece' : 'pieces'}` : 'On this device';
+    $('saved-music-list').replaceChildren(...shown.map(entry => {
+      const item = document.createElement('div'); item.className = 'saved-piece';
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'saved-piece-open'; open.dataset.scoreId = entry.id;
+      const icon = document.createElement('span'); icon.className = 'saved-piece-icon'; icon.textContent = '♫'; icon.setAttribute('aria-hidden', 'true');
+      const copy = document.createElement('span'); copy.className = 'saved-piece-copy';
+      const title = document.createElement('strong'); title.textContent = scoreTitle(entry.name || 'Saved score');
+      const meta = document.createElement('small'); meta.textContent = entry.temporary ? 'This visit only · not saved' : 'Saved on this device';
+      const arrow = document.createElement('span'); arrow.className = 'saved-piece-arrow'; arrow.textContent = '↗'; arrow.setAttribute('aria-hidden', 'true');
+      copy.append(title, meta); open.append(icon, copy, arrow); open.addEventListener('click', () => openEntry(entry));
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'saved-piece-remove'; remove.textContent = '×'; remove.setAttribute('aria-label', `Remove ${scoreTitle(entry.name || 'saved score')}`); remove.addEventListener('click', () => removeEntry(entry));
+      item.append(open, remove); return item;
+    }));
+  }
+  function unpackLibrary(saved) {
+    if (!saved) return [];
+    const entries = [{...saved, id: saved.id || 'legacy-pdf-score'}, ...(Array.isArray(saved.entries) ? saved.entries : [])];
+    const ids = new Set();
+    return entries.map(entry => ({version: entry.version, id: entry.id || entryId(), name: entry.name, bytes: entry.bytes, savedAt: entry.savedAt, warning: entry.warning})).filter(entry => {
+      if (ids.has(entry.id)) return false;
+      ids.add(entry.id); return true;
+    });
+  }
+  function changeLibrary(change) {
+    const next = storageQueue.catch(() => {}).then(async () => {
+      await libraryReady;
+      const db = await database();
+      const entries = await new Promise((resolve, reject) => {
+        let transaction, updated, settled = false;
+        const finish = error => {
+          if (settled) return;
+          settled = true; clearTimeout(timeout);
+          error ? reject(error) : resolve(updated);
+        };
+        const timeout = setTimeout(() => {
+          try { transaction?.abort(); } catch {}
+          finish(new Error('Browser storage did not respond.'));
+        }, 8000);
+        try {
+          // Read and update within one transaction, so another tab's saves are
+          // preserved even when this tab's visible library is out of date.
+          transaction = db.transaction('local', 'readwrite');
+          const store = transaction.objectStore('local');
+          const request = store.get('pdf-arrangement');
+          request.onsuccess = () => {
+            try {
+              updated = change(unpackLibrary(request.result));
+              if (updated.length) store.put({...updated[0], entries: updated.slice(1)}, 'pdf-arrangement');
+              else store.delete('pdf-arrangement');
+            } catch (error) { transaction.abort(); finish(error); }
+          };
+          transaction.oncomplete = () => finish();
+          transaction.onerror = () => finish(transaction.error || new Error('Browser storage failed.'));
+          transaction.onabort = () => finish(transaction.error || new Error('Browser storage was interrupted.'));
+        } catch (error) { finish(error); }
+      });
+      libraryEntries = entries; renderLibrary();
+    });
+    storageQueue = next;
+    return next;
+  }
+  function openEntry(entry) {
+    try {
+      if (entry.version !== 1 || typeof entry.name !== 'string' || !/\.midi?$/i.test(entry.name)) throw new Error('Unsupported saved score.');
+      const midi = parseScore(entry.bytes);
+      ++importToken;
+      window.dispatchEvent(new Event('medici:cancel-pdf'));
+      currentEntry = entry;
+      showScore(midi, entry.name);
+      $('score-recognition-note').textContent = entry.warning || 'Experimental recognition. Check the notes and timing against your sheet music.';
+      status('Your saved score is ready. Choose a sound and press Play.');
+      setView('score', true);
+    } catch {
+      storageStatus('Couldn’t open this saved score. Upload its PDF again, or use its remove button to delete the damaged copy.', true);
+    }
+  }
+  $('back-to-library').addEventListener('click', () => { stop(false); stopPreview(); window.dispatchEvent(new Event('medici:cancel-pdf')); renderLibrary(); setView('library', true); });
+  $('download-score').addEventListener('click', () => {
+    if (!currentEntry?.bytes) return;
+    const url = URL.createObjectURL(new Blob([currentEntry.bytes], {type: 'audio/midi'}));
+    const link = document.createElement('a'); link.href = url; link.download = currentEntry.name; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
   // An inline sound library: small starting palette, searchable full catalog.
   const featuredInstruments = ['acoustic_grand_piano', 'acoustic_guitar_nylon', 'violin', 'cello', 'orchestral_harp', 'flute', 'choir_aahs', 'celesta'];
   let soundFamily = 'featured';
@@ -354,7 +471,8 @@
     $('track').replaceChildren(new Option('All melodic parts', 'all'));
     midi.tracks.forEach((track, index) => { if (!track.instrument.percussion && track.notes.length) $('track').add(new Option(track.name || `Part ${index + 1} · ${track.instrument.name}`, String(index))); });
     $('track').disabled = false;
-    $('score-name').textContent = name.replace(/\.midi?$/i, '');
+    $('score-name').textContent = scoreTitle(name);
+    $('active-score-title').textContent = scoreTitle(name);
     $('clear-midi').hidden = false;
     loadPart();
   }
@@ -363,66 +481,96 @@
     try {
       if (!detail || typeof detail.name !== 'string' || !/\.midi?$/i.test(detail.name)) throw new Error('The recognized score has an invalid name.');
       const midi = parseScore(detail.bytes);
+      const entry = {version: 1, id: entryId(), name: detail.name, bytes: detail.bytes, savedAt: Date.now(),
+        warning: $('sheet-warnings').hidden ? 'Experimental recognition. Check the notes and timing against your sheet music.' : $('sheet-warnings').textContent};
+      currentEntry = entry; sessionEntries.set(entry.id, entry);
       showScore(midi, detail.name);
+      $('score-recognition-note').textContent = entry.warning;
+      setView('score', true);
       status('Your score is ready. Choose a sound and press Play. Check the notes: recognition can make mistakes.');
       storageStatus('Saving your converted score privately in this browser…');
+      renderLibrary();
       try {
-        await saveStored('pdf-arrangement', {version: 1, name: detail.name, bytes: detail.bytes});
+        await changeLibrary(entries => [entry, ...entries.filter(item => item.id !== entry.id)]);
+        sessionEntries.delete(entry.id); renderLibrary();
         if (token !== importToken) return;
         storageStatus('Score saved on this device, in this browser only. Nothing was uploaded.');
       } catch {
         if (token !== importToken) return;
-        storageStatus('Couldn’t save this score. You can play it for this visit. A previously saved score may return on reload.', true);
+        renderLibrary();
+        storageStatus('Couldn’t save this score. You can play it for this visit. Your previous saved music is unchanged.', true);
       }
     } catch (error) {
       if (token !== importToken) return;
-      status(`Couldn’t read the converted score. ${String(error?.message || error).slice(0, 180)}`, true);
+      const message = `Couldn’t read the converted score. ${String(error?.message || error).slice(0, 180)}`;
+      status(message, true);
+      // Keep the failure visible even when the player has not been revealed.
+      if (view !== 'score') { $('sheet-status').textContent = message; $('sheet-status').classList.add('error'); setView('library', true); }
     }
   }
   window.addEventListener('medici:score-ready', event => receiveScore(event.detail));
-  window.addEventListener('medici:pdf-started', () => { ++importToken; stop(false); stopPreview(); });
+  window.addEventListener('medici:pdf-started', () => { ++importToken; stop(false); stopPreview(); setView('converting', true); });
+  window.addEventListener('medici:pdf-busy', event => {
+    if (!event.detail?.busy && view === 'converting') { renderLibrary(); setView('library', true); }
+  });
   async function restoreSaved() {
     const token = importToken, revision = preferencesRevision;
-    const preferencesRead = stored('preferences').then(saved => {
+    stored('preferences').then(saved => {
       if (preferencesRevision === revision) restorePreferences(saved);
     }).catch(() => {});
     try {
-      const saved = await stored('pdf-arrangement');
+      libraryEntries = unpackLibrary(await stored('pdf-arrangement'));
+      renderLibrary();
       if (token !== importToken) return;
-      if (!saved) { storageStatus('Your converted score stays in this browser. Nothing is uploaded.'); return; }
+      if (!libraryEntries.length) { storageStatus('Your converted music stays in this browser. Nothing is uploaded.'); return; }
+      // Prepare the most recent score silently, while the library stays on screen.
+      // Opening a saved piece is the only way to reveal the player on a new visit.
+      const saved = libraryEntries[0];
+      currentEntry = saved;
       $('clear-midi').hidden = false;
       if (saved.version !== 1 || typeof saved.name !== 'string' || !/\.midi?$/i.test(saved.name)) throw new Error('Saved file is not a supported MIDI record.');
-      const midi = parseScore(saved.bytes);
-      if (token !== importToken) return;
-      showScore(midi, saved.name);
+      showScore(parseScore(saved.bytes), saved.name);
       status('Your saved score is ready. Choose a sound and press Play.');
-      storageStatus('Restored from this browser. Nothing was uploaded.');
+      storageStatus('Your saved music is ready. Open a piece to choose its sound.');
     } catch {
       if (token !== importToken) return;
-      storageStatus('Couldn’t restore the saved score. You can upload its PDF again. If the saved score is damaged, remove it and try again.', true);
+      storageStatus('Couldn’t restore saved music. You can upload a PDF again. A damaged saved piece can be removed from the list.', true);
     }
-    await preferencesRead;
   }
-  $('clear-midi').addEventListener('click', async () => {
+  async function removeEntry(entry) {
+    if (!entry || pendingRemovals.has(entry.id)) return;
     const token = ++importToken;
+    pendingRemovals.add(entry.id);
     window.dispatchEvent(new Event('medici:cancel-pdf'));
-    stop(true); stopPreview();
-    state.score = null; state.notes = []; state.duration = 0; state.offset = 0;
-    $('track').replaceChildren(new Option('All melodic parts', 'all')); $('track').disabled = true;
-    $('score-name').textContent = 'Your music goes here'; $('score-meta').textContent = 'Upload sheet music to begin.';
-    $('seek').max = '1'; updateTransport();
-    status('Score removed from the player.'); storageStatus('Removing the saved score…');
-    $('clear-midi').disabled = true;
+    if (currentEntry?.id === entry.id) {
+      stop(true); stopPreview();
+      state.score = null; state.notes = []; state.duration = 0; state.offset = 0;
+      $('track').replaceChildren(new Option('All melodic parts', 'all')); $('track').disabled = true;
+      $('score-name').textContent = 'Your music goes here'; $('score-meta').textContent = 'Upload sheet music to begin.';
+      $('seek').max = '1'; updateTransport();
+      status('Score removed from the player.');
+    }
+    renderLibrary(); setView('library', true);
+    storageStatus('Removing the saved score…'); $('clear-midi').disabled = true;
     try {
-      await saveStored('pdf-arrangement', undefined, true);
+      // Session-only music has no stored copy. Removing it must still work when
+      // storage is unavailable. Wait for queued saves before deciding that.
+      await storageQueue.catch(() => {});
+      if (libraryEntries.some(item => item.id === entry.id) || !sessionEntries.has(entry.id))
+        await changeLibrary(entries => entries.filter(item => item.id !== entry.id));
+      if (currentEntry?.id === entry.id) currentEntry = null;
+      sessionEntries.delete(entry.id);
+      pendingRemovals.delete(entry.id); renderLibrary();
       if (token !== importToken) return;
       $('clear-midi').hidden = true;
-      storageStatus('Saved score removed from this browser. Your original PDF is unchanged.');
+      storageStatus('Saved score removed from this browser. Your other music and original PDF are unchanged.');
     } catch {
+      pendingRemovals.delete(entry.id); renderLibrary();
       if (token !== importToken) return;
-      storageStatus('Couldn’t remove the saved copy. Try Remove saved score again, or clear this site’s browser storage.', true);
+      storageStatus('Couldn’t remove the saved copy. Try its remove button again, or clear this site’s browser storage.', true);
     } finally { $('clear-midi').disabled = false; }
-  });
+  }
+  $('clear-midi').addEventListener('click', () => removeEntry(currentEntry));
   window.addEventListener('pagehide', () => {
     stop(false); stopPreview();
     if (preferencesTimer !== null) { clearTimeout(preferencesTimer); preferencesTimer = null; saveStored('preferences', preferences()).catch(() => {}); }
@@ -435,5 +583,6 @@
     renderInstruments();
   }).catch(() => status('The full instrument list could not load. Featured instruments are still available.', true));
   updateTransport();
-  restoreSaved();
+  setView('library');
+  libraryReady = restoreSaved();
 })();
