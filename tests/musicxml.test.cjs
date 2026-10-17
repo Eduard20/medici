@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 'use strict';
 
 const test = require('node:test');
@@ -209,5 +210,36 @@ test('enforces page, tempo, note, and duration safety bounds', () => {
   assert.throws(() => convert(Array(LIMITS.pages + 1).fill('<score-partwise/>')), /At most/);
   for (const tempo of [0, -10, 500, Infinity, 'largo']) assert.throws(() => convert(score(measure(attrs() + note())), { tempo }), /Tempo/);
   assert.throws(() => convert(score(measure(attrs() + note('C', LIMITS.quarterNotes + 1)))), /duration is too large/);
-  assert.throws(() => convert(score(measure(attrs() + note().repeat(LIMITS.notes + 1)))), /too many notes|too large/);
+  // A compact fixture plus a sentinel parser proves rejection happens before
+  // any large DOM allocation, even if this safeguard regresses in the future.
+  class UnusedParser { constructor() { throw new Error('Oversized input reached DOMParser.'); } }
+  const oversizedScore = score(measure('<note/>'.repeat(LIMITS.notes + 1)));
+  assert.throws(() => convert(oversizedScore, { DOMParser: UnusedParser }), /too many notes/);
+});
+
+
+test('chord tones inherit an omitted voice and staff from their leading note', () => {
+  const result = convert(score(measure(attrs(1, undefined, '<staves>2</staves>') +
+    note('C', 1, '<voice>2</voice><staff>2</staff>') + note('E', 1, '<chord/>'))));
+  const midi = decode(result);
+  assert.equal(midi.tracks.length, 1);
+  assert.equal(midi.tracks[0].name, 'Piano · staff 2');
+  assert.deepEqual(midi.tracks[0].notes.map(note => note.ticks), [0, 0]);
+});
+
+test('matches named parts if their order changes on later pages', () => {
+  const make = (reverse = false) => {
+    const parts = [
+      { id: reverse ? 'new-1' : 'first-1', name: 'Flute', pitch: 'C' },
+      { id: reverse ? 'new-2' : 'first-2', name: 'Cello', pitch: 'E' },
+    ];
+    if (reverse) parts.reverse();
+    return '<score-partwise><part-list>' + parts.map(part => `<score-part id="${part.id}"><part-name>${part.name}</part-name></score-part>`).join('') + '</part-list>' +
+      parts.map(part => `<part id="${part.id}">${measure(attrs() + note(part.pitch, 4))}</part>`).join('') + '</score-partwise>';
+  };
+  const result = convert([make(), make(true)]);
+  const midi = decode(result);
+  assert.equal(result.summary.tracks, 2);
+  assert.deepEqual(midi.tracks.map(track => [track.name, track.notes.map(note => note.midi)]), [['Flute', [60, 60]], ['Cello', [64, 64]]]);
+  assert.deepEqual(midi.tracks[1].notes.map(note => note.ticks), [0, 1920]);
 });

@@ -61,7 +61,7 @@
     if (xmlStrings.reduce((sum, xml) => sum + xml.length, 0) > LIMITS.characters) fail('MusicXML input is too large.');
     // Reject obviously oversized scores before constructing an XML DOM. The
     // parsed-note limit below is also authoritative for unusual namespace syntax.
-    if (xmlStrings.reduce((sum, xml) => sum + (xml.match(/<(?:[A-Za-z_][\w.-]*:)?note(?:\s|>)/g) || []).length, 0) > LIMITS.notes) fail('The score contains too many notes.');
+    if (xmlStrings.reduce((sum, xml) => sum + (xml.match(/<(?:[A-Za-z_][\w.-]*:)?note(?=[\s/>])/g) || []).length, 0) > LIMITS.notes) fail('The score contains too many notes.');
     const tempo = number(String(options.tempo === undefined ? 100 : options.tempo), 'Tempo', { minimum: 20, maximum: 400 });
     const Parser = options.DOMParser || root.DOMParser;
     if (!Parser) fail('This browser does not provide an XML parser.');
@@ -136,9 +136,9 @@
           const pitch = first(child, 'pitch');
           const grace = first(child, 'grace');
           const chord = first(child, 'chord');
-          const voice = value(child, 'voice') || '1';
+          const voice = value(child, 'voice') || (chord && anchor ? anchor.voice : '1');
           const staffText = value(child, 'staff');
-          const staff = staffText === null ? 1 : number(staffText, 'Staff number', { minimum: 1, maximum: 64, integer: true });
+          const staff = staffText === null ? (chord && anchor ? anchor.staff : 1) : number(staffText, 'Staff number', { minimum: 1, maximum: 64, integer: true });
           state.staves = Math.max(state.staves, staff);
           let midiPitch;
           if (rest && pitch) fail(`${context}: a note cannot be both a rest and a pitch.`);
@@ -168,7 +168,7 @@
             offset = anchor.offset;
             if (duration > anchor.duration + EPSILON) warn('A chord tone is longer than its leading note; check the recognized rhythm.');
           } else {
-            anchor = { offset, duration, voice, rest: !!rest };
+            anchor = { offset, duration, voice, staff, rest: !!rest };
             cursor += duration;
           }
           extent = Math.max(extent, offset + duration, cursor);

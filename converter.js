@@ -9,7 +9,7 @@
   const supported = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function' && !!window.Worker && !!window.crypto?.subtle;
   const say = (message, error = false) => { $('pdf-status').textContent = message; $('pdf-status').classList.toggle('error', error); };
   function busy(value) {
-    for (const id of ['pdf-file', 'pdf-first', 'pdf-count', 'pdf-tempo', 'pdf-start']) $(id).disabled = value || !supported;
+    for (const id of ['pdf-file', 'pdf-first', 'pdf-count', 'pdf-tempo', 'pdf-start', 'pdf-clear-cache']) $(id).disabled = value || !supported;
     $('pdf-cancel').hidden = !value;
     $('pdf-progress').hidden = !value;
   }
@@ -70,7 +70,7 @@
       if (!String.fromCharCode(...head).includes('%PDF-')) throw new Error('This is not a PDF. Choose printed sheet music saved as a PDF.');
       say('Opening your PDF locally…');
       const lib = await pdfLibrary(); check(job);
-      job.pdf = lib.getDocument({data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false});
+      job.pdf = lib.getDocument({data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, maxImageSize: 16000000, canvasMaxAreaInBytes: 64000000});
       job.pdf.onPassword = () => { job.pdf.destroy(); };
       const doc = await job.pdf.promise; check(job);
       if (first > doc.numPages) throw new Error(`This PDF has ${doc.numPages} pages. Choose an earlier starting page.`);
@@ -114,8 +114,8 @@
     try {
       if (!window.indexedDB) throw new Error('Browser storage is unavailable.');
       await new Promise((resolve,reject) => {
-        let settled = false, db;
-        const timeout = setTimeout(() => {settled = true; db?.close(); reject(new Error('Browser storage did not respond.'));},8000);
+        let settled = false, db, tx;
+        const timeout = setTimeout(() => { try { tx?.abort(); } catch {} settled = true; db?.close(); reject(new Error('Browser storage did not respond.')); },8000);
         const finish = error => {if (settled) return; settled = true; clearTimeout(timeout); db?.close(); error ? reject(error) : resolve();};
         const request = indexedDB.open('medici-listening-room',1);
         request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains('local')) request.result.createObjectStore('local'); };
@@ -124,7 +124,7 @@
         request.onsuccess = () => {
           db = request.result; if (settled) {db.close(); return;}
           try {
-            const tx = db.transaction('local','readwrite');
+            tx = db.transaction('local','readwrite');
             tx.objectStore('local').put({version:1,name:sourceName + ' · experimental.mid',bytes},'arrangement');
             tx.oncomplete = () => finish(); tx.onerror = () => finish(tx.error); tx.onabort = () => finish(tx.error || new Error('Save interrupted.'));
           } catch(error) {finish(error);}
@@ -134,6 +134,11 @@
     } catch(error) {say(`Couldn’t save to the studio: ${String(error.message || error).slice(0,160)} Download the MIDI and import it manually.`,true);}
     finally {$('pdf-use').disabled = false;}
   }
+  $('pdf-clear-cache').addEventListener('click',async () => {
+    if (current) return;
+    try { await caches.delete('medici-omr-models-v1'); say('Recognition model cache cleared. Your saved MIDI is unchanged.'); }
+    catch { say('Could not clear the recognition cache. You can clear site data in browser settings.',true); }
+  });
   $('pdf-start').addEventListener('click',convert);
   $('pdf-cancel').addEventListener('click',() => cancel());
   $('pdf-file').addEventListener('change',() => {clearResult(); say('PDF selected. Start with one page to check the result.');});
