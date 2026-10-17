@@ -1,5 +1,5 @@
-Object.defineProperty(WebAssembly, "Suspending", {value:undefined});
-Object.defineProperty(WebAssembly, "promising", {value:undefined});
+delete WebAssembly.Suspending;
+delete WebAssembly.promising;
 self.postMessage({type:"capabilities",jspi:typeof WebAssembly.Suspending+"/"+typeof WebAssembly.promising});
 // Adapted for Medici (2026-10-17) from Partsong © 2026 Paul Fremantle. AGPL-3.0.
 // Changes: verified downloads, bounded retry/cleanup, and async Python bridge.
@@ -303,14 +303,18 @@ let recogniseProfiled;
 let runTimes = [];
 
 async function init() {
-  ort = await import(ORT_URL + "ort.webgpu.min.mjs");
+  // ONNX's WebGPU build needs its own JSPI/Asyncify runtime. Use the smaller
+  // plain WASM build on non-JSPI browsers (including older iOS WebKit), which
+  // also avoids the WebKit Asyncify compilation/memory issue upstream #26827.
+  const jspi = typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function";
+  ort = await import(ORT_URL + (jspi ? "ort.webgpu.min.mjs" : "ort.wasm.min.mjs"));
   ort.env.wasm.wasmPaths = ORT_URL;
   ort.env.wasm.numThreads = self.crossOriginIsolated
     ? Math.min(4, navigator.hardwareConcurrency || 1)
     : 1;
   post({ type: "log", msg: `WASM threads: ${ort.env.wasm.numThreads}` });
   const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
-  try { useGpu = !!(self.navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { useGpu = false; }
+  try { useGpu = !!(jspi && self.navigator.gpu && (await navigator.gpu.requestAdapter())); } catch { useGpu = false; }
 
   post({ type: "progress", stage: "python" });
   pyodide = await loadPyodide({ indexURL: PYODIDE_URL, enableRunUntilComplete: false });
