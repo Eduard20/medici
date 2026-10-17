@@ -126,7 +126,10 @@
   $('back-to-library').addEventListener('click', () => { stop(false); stopPreview(); window.dispatchEvent(new Event('medici:cancel-pdf')); renderLibrary(); setView('library', true); });
   $('download-score').addEventListener('click', () => {
     if (!currentEntry?.bytes) return;
-    const url = URL.createObjectURL(new Blob([currentEntry.bytes], {type: 'audio/midi'}));
+    const midi = currentEntry.source ? parseScore(currentEntry.bytes) : null;
+    if (midi) addSourceAttribution(midi,currentEntry.source);
+    const bytes = midi ? midi.toArray() : currentEntry.bytes;
+    const url = URL.createObjectURL(new Blob([bytes], {type: 'audio/midi'}));
     const link = document.createElement('a'); link.href = url; link.download = currentEntry.name; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   });
@@ -504,6 +507,16 @@
     const note = document.createElement('p'); note.textContent = 'Source attribution is saved with this piece and included in exported MIDI metadata. Check source terms and local rights before sharing.';
     container.append(credit,links,note);
   }
+  function addSourceAttribution(midi,source) {
+    if (!source) return;
+    const marker = 'MIDI derived by experimental optical music recognition in Sheet Music Studio.';
+    midi.header.meta = midi.header.meta.filter(item => !String(item.text || '').includes(marker));
+    // The MIDI writer expects byte strings. Encode Unicode explicitly instead
+    // of truncating UTF-16 characters to their low byte. Also repairs old exports.
+    const text = 'Text encoding: UTF-8\n' + window.MediciCatalogue.attribution(source);
+    const utf8 = Array.from(new TextEncoder().encode(text),byte => String.fromCharCode(byte)).join('');
+    midi.header.meta.push({type:'text',ticks:0,text:utf8});
+  }
   async function receiveScore(detail) {
     const token = ++importToken;
     try {
@@ -511,8 +524,7 @@
       const source = window.MediciCatalogue?.sanitizeSource(detail.source) || null;
       const midi = parseScore(detail.bytes);
       // Retain source/edition attribution even when the derived MIDI leaves the app.
-      const attribution = source && window.MediciCatalogue.attribution(source);
-      if (attribution && !midi.header.meta.some(item => item.text === attribution)) midi.header.meta.push({type:'text',ticks:0,text:attribution});
+      addSourceAttribution(midi,source);
       const encoded = source ? midi.toArray() : null;
       const bytes = encoded ? encoded.buffer.slice(encoded.byteOffset,encoded.byteOffset+encoded.byteLength) : detail.bytes;
       detail.bytes = bytes;
